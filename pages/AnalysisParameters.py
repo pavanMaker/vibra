@@ -1,0 +1,65 @@
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QLineEdit, QComboBox, QLabel,
+    QGridLayout, QPushButton, QHBoxLayout, QDialog
+)
+from PyQt6.QtCore import Qt
+
+class AnalysisParameter(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Parameter List")
+        self.setModal(True)
+        self.setFixedSize(500, 500)
+
+        layout = QVBoxLayout()
+
+        heading = QLabel("Parameter List")
+        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        heading.setStyleSheet("font-size: 20px; font-weight: bold;")
+        layout.addWidget(heading)
+
+        self.combo_measurement = QComboBox()
+        self.combo_measurement.addItems(["Acceleration", "Velocity", "Displacement"])
+
+        fields = [
+            ("Measurement Quantity", self.combo_measurement),
+            ("Fmax(Hz)", QLineEdit()),
+            ("Fmin(Hz) (0-95% Fmax)", QLineEdit()),
+            ("Number of Samples/Lines", QLineEdit()),
+            ("Average Type", QLineEdit()),
+            ("Average Number", QLineEdit()),
+            ("Window Type", QComboBox()),
+            ("Overlap Rate", QLineEdit()),
+            ("Expected RPM", QLineEdit())
+        ]
+
+        form_grid = QGridLayout()
+        for i, (label_text, widget) in enumerate(fields):
+            label = QLabel(label_text)
+            form_grid.addWidget(label, i, 0)
+            form_grid.addWidget(widget, i, 1)
+        layout.addLayout(form_grid)
+
+        placeholder_box = QHBoxLayout()
+        for _ in range(4):
+            box = QLineEdit()
+            box.setPlaceholderText("")
+            box.setReadOnly(True)
+            placeholder_box.addWidget(box)
+        layout.addLayout(placeholder_box)
+
+        button_row = QHBoxLayout()
+        cancel_btn = QPushButton("Cancel")
+        apply_btn = QPushButton("Apply")
+        cancel_btn.clicked.connect(self.reject)
+        apply_btn.clicked.connect(self.apply_settings)
+
+        button_row.addWidget(cancel_btn)
+        button_row.addWidget(apply_btn)
+        layout.addLayout(button_row)
+
+        self.setLayout(layout)
+
+    def apply_settings(self):
+        self.parent().selected_quantity = self.combo_measurement.currentText()
+        self.close()

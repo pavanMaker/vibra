@@ -1,0 +1,3 @@
+[console_scripts]
+ideexport = idelib.tools.ideexport:main
+ideinfo = idelib.tools.ideinfo:main

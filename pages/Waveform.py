@@ -1,3 +1,4 @@
+
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit,
     QSizePolicy, QMenu, QStackedWidget
@@ -16,13 +17,17 @@ class WaveformPage(QWidget):
         self.main_window = main_window
         self.daq = Mcc172Backend(board_num=0, channel=0, sensitivity=0.1, sample_rate=51200)
         self.daq.setup()
+        # self.daq.start_acquisition()
+        # self.daq.auto_detect_channel()
         self.selected_quantity = "Acceleration"
-        self.is_running = False  # Measurement state tracker
+        #self.is_running = False  # Measurement state tracker
 
         self.setup_ui()
         self.start_clock()
+        
 
         self.timer = QTimer()
+
         self.timer.timeout.connect(self.update_plot)
 
     def setup_ui(self):
@@ -169,38 +174,65 @@ class WaveformPage(QWidget):
         self.time_label.setText(now.toString("HH:mm:ss"))
 
     def switch_trace_mode(self, index):
+        
+       
         self.stacked_views.setCurrentIndex(index)
-
+    """
+    def start_measurement(self):
+        if not self.is_running:
+            self.daq.start_acquisition()
+            self.timer.start(1000)
+            self.is_running = True
+            self.start_button.setVisible(False)
+            self.stop_button.setVisible(True)
+            print("️Measurement started.")
+        else:
+            print("Measurement is already running.")
+""" 
     def start_measurement(self):
         self.daq.start_acquisition()
         self.timer.start(1000)
-        self.is_running = True
         self.start_button.setVisible(False)
         self.stop_button.setVisible(True)
-        print("️Measurement started.")
+
 
     def stop_measurement(self):
         self.daq.stop_scan()
         self.timer.stop()
-        self.is_running = False
+        #self.is_running = False
         self.start_button.setVisible(True)
         self.stop_button.setVisible(False)
         print("Measurement stopped.")
 
     def update_plot(self):
-        self.t, self.accel, self.velocity, self.displacement, acc_peak, acc_rms, vel_rms, disp_pp, dom_freq = self.daq.get_latest_waveform()
+        self.t, self.accel, self.velocity, self.displacement, acc_peak, acc_rms, vel_rms, disp_pp, dom_freq,fft_freqs,fft_mags,freqs_vel,fft_mags_vel,dom_freq_vel,rms_fft= self.daq.get_latest_waveform()
         if len(self.t) == 0:
             return
 
         if self.selected_quantity == "Velocity":
             y_data = self.velocity
+            N = len(y_data)
             y_label = "Velocity (mm/s)"
+            pos_freqs = freqs_vel[:N // 2]
+            mask = pos_freqs <= 500
+            self.freqs = pos_freqs[mask]
+            fft_mags = fft_mags_vel[mask]
+            self.fft_mags = fft_mags
+
+
         elif self.selected_quantity == "Displacement":
             y_data = self.displacement
             y_label = "Displacement (μm)"
+            
         else:
             y_data = self.accel
+            N1 = len(y_data)
             y_label = "Acceleration (g)"
+            pos_freqs = fft_freqs[:N1 // 2]
+            mask = pos_freqs <=500
+            self.freqs = pos_freqs[mask]
+            fft_mags = fft_mags[mask]
+            self.fft_mags = fft_mags
 
         view_index = self.stacked_views.currentIndex()
         if view_index == 0:
@@ -225,12 +257,11 @@ class WaveformPage(QWidget):
             self.canvas_top.draw()
 
             self.ax_bottom.clear()
-            fft_result = np.fft.fft(y_data)
-            N = len(y_data)
-            freqs = np.fft.fftfreq(N, 1 / self.daq.actual_rate)
-            fft_mags = (2.0 / N) * np.abs(fft_result[:N // 2])
-            self.freqs = freqs[:N // 2]
-            self.fft_mags = fft_mags
+            #fft_result = np.fft.fft(y_data)
+            
+            #freqs = np.fft.fftfreq(N, 1 / self.daq.actual_rate)
+            #fft_mags = (2.0 / N) * np.abs(fft_result[:N // 2])
+            
             self.ax_bottom.plot(self.freqs, self.fft_mags)
             self.ax_bottom.set_title("Spectrum")
             self.ax_bottom.set_xlabel("Frequency (Hz)")
@@ -239,7 +270,7 @@ class WaveformPage(QWidget):
             self.canvas_bottom.draw()
 
         self.acc_input["input"].setText(f"{acc_peak:.2f}")
-        self.vel_input["input"].setText(f"{vel_rms:.2f}")
+        self.vel_input["input"].setText(f"{rms_fft:.2f}")
         self.disp_input["input"].setText(f"{disp_pp:.2f}")
         self.freq_input["input"].setText(f"{dom_freq:.2f}")
 

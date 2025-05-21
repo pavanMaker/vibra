@@ -61,5 +61,7 @@ class AnalysisParameter(QDialog):
         self.setLayout(layout)
 
     def apply_settings(self):
+        
+          
         self.parent().selected_quantity = self.combo_measurement.currentText()
         self.close()

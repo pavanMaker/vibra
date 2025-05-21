@@ -20,18 +20,23 @@ class AnalysisParameter(QDialog):
 
         self.combo_measurement = QComboBox()
         self.combo_measurement.addItems(["Acceleration", "Velocity", "Displacement"])
+        self.combo_No_of_Samples = QComboBox()
+        self.combo_No_of_Samples.addItems([ "512/225", "1024/450", "2048/900", "4096/1800", "8192/3600", "16384/7200"])
+        self.combo_Window_Type = QComboBox()
+        self.combo_Window_Type.addItems(["Hanning", "Flat Top","Uniform"])
 
         fields = [
             ("Measurement Quantity", self.combo_measurement),
             ("Fmax(Hz)", QLineEdit()),
             ("Fmin(Hz) (0-95% Fmax)", QLineEdit()),
-            ("Number of Samples/Lines", QLineEdit()),
+            ("Number of Samples/Lines", self.combo_No_of_Samples),
             ("Average Type", QLineEdit()),
             ("Average Number", QLineEdit()),
-            ("Window Type", QComboBox()),
+            ("Window Type", self.combo_Window_Type),
             ("Overlap Rate", QLineEdit()),
             ("Expected RPM", QLineEdit())
         ]
+        
 
         form_grid = QGridLayout()
         for i, (label_text, widget) in enumerate(fields):

@@ -205,9 +205,10 @@ class WaveformPage(QWidget):
         print("Measurement stopped.")
 
     def update_plot(self):
-        self.t, self.accel, self.velocity, self.displacement, acc_peak, acc_rms, vel_rms, disp_pp, dom_freq,fft_freqs,fft_mags,freqs_vel,fft_mags_vel,dom_freq_vel,rms_fft= self.daq.get_latest_waveform()
+        self.t, self.accel, self.velocity, self.displacement, acc_peak, acc_rms, vel_rms, disp_pp, dom_freq,fft_freqs,fft_mags,freqs_vel,fft_mags_vel,fft_freqs_disp,fft_mags_disp,rms_fft= self.daq.get_latest_waveform()
         if len(self.t) == 0:
             return
+
 
         if self.selected_quantity == "Velocity":
             y_data = self.velocity
@@ -223,6 +224,12 @@ class WaveformPage(QWidget):
         elif self.selected_quantity == "Displacement":
             y_data = self.displacement
             y_label = "Displacement (μm)"
+            N2 = len(y_data)
+            pos_freqs = fft_freqs_disp[:N2 // 2]
+            mask = pos_freqs <= 500 
+            self.freqs = pos_freqs[mask]
+            fft_mags = fft_mags_disp[mask]
+            self.fft_mags = fft_mags
             
         else:
             y_data = self.accel

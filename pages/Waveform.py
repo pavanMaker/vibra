@@ -309,35 +309,145 @@ class WaveformPage(QWidget):
     #     self.disp_input["input"].setText(f"{disp_pp:.2f}")
     #     self.freq_input["input"].setText(f"{dom_freq:.2f}")
 
+    # def update_plot(self):
+    #     view_index = self.stacked_views.currentIndex()
+    #     ch0_result, ch1_result = self.daq.get_latest_waveform(fmax=self.selected_fmax)
+
+    #     if not ch0_result or "time" not in ch0_result:
+    #         print("No valid Ch0 data.")
+    #         return
+
+    #     # Determine which data to use for single-channel views (Ch0)
+    #     if self.selected_quantity == "Velocity":
+    #         y_data = ch0_result["velocity"]
+    #         y_label = "Velocity (mm/s)"
+    #         fft_freqs = ch0_result["freqs_vel"]
+    #         fft_mags = ch0_result["fft_mags_vel"]
+    #     elif self.selected_quantity == "Displacement":
+    #         y_data = ch0_result["displacement"]
+    #         y_label = "Displacement (μm)"
+    #         fft_freqs = ch0_result["fft_freqs_disp"]
+    #         fft_mags = ch0_result["fft_mags_disp"]
+    #     else:
+    #         y_data = ch0_result["acceleration"]
+    #         y_label = "Acceleration (g)"
+    #         fft_freqs = ch0_result["fft_freqs"]
+    #         fft_mags = ch0_result["fft_mags"]
+
+    #     if view_index == 0:
+    #         # Readings + Waveform
+    #         self.ax_waveform.clear()
+    #         self.ax_waveform.plot(ch0_result["time"], y_data)
+    #         self.ax_waveform.set_title("Waveform")
+    #         self.ax_waveform.set_xlabel("Time (s)")
+    #         self.ax_waveform.set_ylabel(y_label)
+    #         margin = (max(y_data) - min(y_data)) * 0.1 or 0.2
+    #         self.ax_waveform.set_ylim(min(y_data) - margin, max(y_data) + margin)
+    #         self.ax_waveform.grid(True)
+    #         self.canvas_waveform.draw()
+
+    #     elif view_index == 1:
+    #         # Waveform + Spectrum
+    #         self.ax_top.clear()
+    #         self.ax_top.plot(ch0_result["time"], y_data)
+    #         self.ax_top.set_title("Waveform")
+    #         self.ax_top.set_xlabel("Time (s)")
+    #         self.ax_top.set_ylabel(y_label)
+    #         margin = (max(y_data) - min(y_data)) * 0.1 or 0.2
+    #         self.ax_top.set_ylim(min(y_data) - margin, max(y_data) + margin)
+    #         self.ax_top.grid(True)
+    #         self.canvas_top.draw()
+
+    #         self.ax_bottom.clear()
+    #         mask = fft_freqs <= 500
+    #         self.freqs = fft_freqs[mask]
+    #         self.fft_mags = fft_mags[mask]
+    #         self.ax_bottom.plot(self.freqs, self.fft_mags)
+    #         self.ax_bottom.set_title("Spectrum")
+    #         self.ax_bottom.set_xlabel("Frequency (Hz)")
+    #         self.ax_bottom.set_ylabel(f"{y_label} RMS")
+    #         self.ax_bottom.grid(True)
+    #         self.canvas_bottom.draw()
+
+    #     elif view_index == 2:
+    #         # Waveform (Ch1 + Ch2)
+    #         self.ax_ch1.clear()
+    #         self.ax_ch2.clear()
+
+    #         self.ax_ch1.plot(ch0_result["time"], ch0_result["acceleration"], label="Ch0")
+    #         self.ax_ch1.set_ylabel("Ch0 Acc (g)")
+    #         self.ax_ch1.grid(True)
+
+    #         self.ax_ch2.plot(ch1_result["time"], ch1_result["acceleration"], label="Ch1", color="orange")
+    #         self.ax_ch2.set_ylabel("Ch1 Acc (g)")
+    #         self.ax_ch2.set_xlabel("Time (s)")
+    #         self.ax_ch2.grid(True)
+
+    #         self.canvas_wave_ch.draw()
+
+    #     elif view_index == 3:
+    #         # Spectrum (Ch1 + Ch2)
+    #         self.ax_ch1_spec.clear()
+    #         self.ax_ch2_spec.clear()
+
+    #         self.ax_ch1_spec.plot(ch0_result["fft_freqs"], ch0_result["fft_mags"], label="Ch0")
+    #         self.ax_ch1_spec.set_ylabel("Ch0 FFT (g)")
+    #         self.ax_ch1_spec.grid(True)
+
+    #         self.ax_ch2_spec.plot(ch1_result["fft_freqs"], ch1_result["fft_mags"], label="Ch1", color="orange")
+    #         self.ax_ch2_spec.set_ylabel("Ch1 FFT (g)")
+    #         self.ax_ch2_spec.set_xlabel("Frequency (Hz)")
+    #         self.ax_ch2_spec.grid(True)
+
+    #         self.canvas_fft_ch.draw()
+
+    #     # Update readings display (from Ch0 only)
+    #     self.acc_input["input"].setText(f"{ch0_result['acc_peak']:.2f}")
+    #     self.vel_input["input"].setText(f"{ch0_result['rms_fft']:.2f}")
+    #     self.disp_input["input"].setText(f"{ch0_result['disp_pp']:.2f}")
+    #     self.freq_input["input"].setText(f"{ch0_result['dom_freq']:.2f}")
+
     def update_plot(self):
         view_index = self.stacked_views.currentIndex()
-        ch0_result, ch1_result = self.daq.get_latest_waveform(fmax=self.selected_fmax)
+        ch0_result, ch1_result, active_channel = self.daq.get_latest_waveform(fmax=self.selected_fmax)
 
-        if not ch0_result or "time" not in ch0_result:
-            print("No valid Ch0 data.")
-            return
-
-        # Determine which data to use for single-channel views (Ch0)
-        if self.selected_quantity == "Velocity":
-            y_data = ch0_result["velocity"]
-            y_label = "Velocity (mm/s)"
-            fft_freqs = ch0_result["freqs_vel"]
-            fft_mags = ch0_result["fft_mags_vel"]
-        elif self.selected_quantity == "Displacement":
-            y_data = ch0_result["displacement"]
-            y_label = "Displacement (μm)"
-            fft_freqs = ch0_result["fft_freqs_disp"]
-            fft_mags = ch0_result["fft_mags_disp"]
+        # Smart selection of primary channel for single plots
+        if active_channel == 1:
+            main_result = ch1_result
+            print("[UI] Displaying Channel 1 data.")
+        elif active_channel == 0:
+            main_result = ch0_result
+            print("[UI] Displaying Channel 0 data.")
         else:
-            y_data = ch0_result["acceleration"]
-            y_label = "Acceleration (g)"
-            fft_freqs = ch0_result["fft_freqs"]
-            fft_mags = ch0_result["fft_mags"]
+            # If both or neither are active, use the one with higher RMS
+            if ch1_result["acc_rms"] > ch0_result["acc_rms"]:
+                main_result = ch1_result
+                print("[UI] Both channels active — displaying Ch1 (higher RMS).")
+            else:
+                main_result = ch0_result
+                print("[UI] Both channels active — displaying Ch0 (higher RMS).")
 
+        # Select quantity
+        if self.selected_quantity == "Velocity":
+            y_data = main_result["velocity"]
+            y_label = "Velocity (mm/s)"
+            fft_freqs = main_result["freqs_vel"]
+            fft_mags = main_result["fft_mags_vel"]
+        elif self.selected_quantity == "Displacement":
+            y_data = main_result["displacement"]
+            y_label = "Displacement (μm)"
+            fft_freqs = main_result["fft_freqs_disp"]
+            fft_mags = main_result["fft_mags_disp"]
+        else:
+            y_data = main_result["acceleration"]
+            y_label = "Acceleration (g)"
+            fft_freqs = main_result["fft_freqs"]
+            fft_mags = main_result["fft_mags"]
+
+        # View 0: Readings + Waveform
         if view_index == 0:
-            # Readings + Waveform
             self.ax_waveform.clear()
-            self.ax_waveform.plot(ch0_result["time"], y_data)
+            self.ax_waveform.plot(main_result["time"], y_data)
             self.ax_waveform.set_title("Waveform")
             self.ax_waveform.set_xlabel("Time (s)")
             self.ax_waveform.set_ylabel(y_label)
@@ -346,10 +456,10 @@ class WaveformPage(QWidget):
             self.ax_waveform.grid(True)
             self.canvas_waveform.draw()
 
+        # View 1: Waveform + Spectrum
         elif view_index == 1:
-            # Waveform + Spectrum
             self.ax_top.clear()
-            self.ax_top.plot(ch0_result["time"], y_data)
+            self.ax_top.plot(main_result["time"], y_data)
             self.ax_top.set_title("Waveform")
             self.ax_top.set_xlabel("Time (s)")
             self.ax_top.set_ylabel(y_label)
@@ -369,12 +479,11 @@ class WaveformPage(QWidget):
             self.ax_bottom.grid(True)
             self.canvas_bottom.draw()
 
+        # View 2: Dual waveform (Ch0 and Ch1)
         elif view_index == 2:
-            # Waveform (Ch1 + Ch2)
             self.ax_ch1.clear()
             self.ax_ch2.clear()
-
-            self.ax_ch1.plot(ch0_result["time"], ch0_result["acceleration"], label="Ch0")
+            self.ax_ch1.plot(ch0_result["time"], ch0_result["acceleration"], label="Ch0", color="blue")
             self.ax_ch1.set_ylabel("Ch0 Acc (g)")
             self.ax_ch1.grid(True)
 
@@ -382,15 +491,13 @@ class WaveformPage(QWidget):
             self.ax_ch2.set_ylabel("Ch1 Acc (g)")
             self.ax_ch2.set_xlabel("Time (s)")
             self.ax_ch2.grid(True)
-
             self.canvas_wave_ch.draw()
 
+        # View 3: Dual spectrum
         elif view_index == 3:
-            # Spectrum (Ch1 + Ch2)
             self.ax_ch1_spec.clear()
             self.ax_ch2_spec.clear()
-
-            self.ax_ch1_spec.plot(ch0_result["fft_freqs"], ch0_result["fft_mags"], label="Ch0")
+            self.ax_ch1_spec.plot(ch0_result["fft_freqs"], ch0_result["fft_mags"], label="Ch0", color="blue")
             self.ax_ch1_spec.set_ylabel("Ch0 FFT (g)")
             self.ax_ch1_spec.grid(True)
 
@@ -398,14 +505,16 @@ class WaveformPage(QWidget):
             self.ax_ch2_spec.set_ylabel("Ch1 FFT (g)")
             self.ax_ch2_spec.set_xlabel("Frequency (Hz)")
             self.ax_ch2_spec.grid(True)
-
             self.canvas_fft_ch.draw()
 
-        # Update readings display (from Ch0 only)
-        self.acc_input["input"].setText(f"{ch0_result['acc_peak']:.2f}")
-        self.vel_input["input"].setText(f"{ch0_result['rms_fft']:.2f}")
-        self.disp_input["input"].setText(f"{ch0_result['disp_pp']:.2f}")
-        self.freq_input["input"].setText(f"{ch0_result['dom_freq']:.2f}")
+        # Update numeric readings
+        self.acc_input["input"].setText(f"{main_result['acc_peak']:.2f}")
+        self.vel_input["input"].setText(f"{main_result['rms_fft']:.2f}")
+        self.disp_input["input"].setText(f"{main_result['disp_pp']:.2f}")
+        self.freq_input["input"].setText(f"{main_result['dom_freq']:.2f}")
+
+
+
 
 
     def on_waveform_click(self, event):

@@ -24,12 +24,10 @@ class AnalysisParameter(QDialog):
         self.combo_No_of_Samples.addItems([ "512/225", "1024/450", "2048/900", "4096/1800", "8192/3600", "16384/7200"])
         self.combo_Window_Type = QComboBox()
         self.combo_Window_Type.addItems(["Hanning", "Flat Top","Uniform"])
-        self.combo_Fmax = QComboBox()
-        self.combo_Fmax.addItems(["3.60kHz", "2.88kHz", "2.30kHz", "1.44kHz", "1.15kHz", "900.0Hz", "720.0Hz", "576.0Hz", "450.0Hz"])
 
         fields = [
             ("Measurement Quantity", self.combo_measurement),
-            ("Fmax(Hz)", self.combo_Fmax),
+            ("Fmax(Hz)", QLineEdit()),
             ("Fmin(Hz) (0-95% Fmax)", QLineEdit()),
             ("Number of Samples/Lines", self.combo_No_of_Samples),
             ("Average Type", QLineEdit()),
@@ -71,7 +69,4 @@ class AnalysisParameter(QDialog):
         
           
         self.parent().selected_quantity = self.combo_measurement.currentText()
-        fmax_text = self.combo_Fmax.currentText()
-        fmax_hz = float(fmax_text.replace("kHz", "").replace("Hz", "")) * (1000 if "kHz" in fmax_text else 1)
-        self.parent().selected_fmax = fmax_hz
         self.close()

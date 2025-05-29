@@ -39,19 +39,14 @@ class Mcc172Backend:
 
     def read_data(self):
         channel_data = []
-
         for config in self.enabled_channels:
             bnum = config['board_num']
             ch = config['channel']
             sens = config['sensitivity']
-
             result = self.boards[bnum].a_in_scan_read_numpy(self.buffer_size, timeout=5.0)
             if result and result.data is not None:
                 try:
-                    if result.data.ndim == 1:
-                        voltage = result.data
-                    else:
-                        voltage = result.data[ch]
+                    voltage = result.data[ch] if result.data.ndim > 1 else result.data
                     channel_data.append({
                         "board_num": bnum,
                         "channel": ch,
@@ -74,32 +69,9 @@ class Mcc172Backend:
                     "sensitivity": sens,
                     "voltage": np.zeros(self.buffer_size)
                 })
-
         return channel_data
 
-    def empty_result(self):
-        return {
-            "time": [],
-            "acceleration": [],
-            "velocity": [],
-            "displacement": [],
-            "acc_peak": 0,
-            "acc_rms": 0,
-            "vel_rms": 0,
-            "disp_pp": 0,
-            "dom_freq": 0,
-            "fft_freqs": [],
-            "fft_mags": [],
-            "fft_mags_vel": [],
-            "fft_mags_disp": [],
-            "rms_fft": 0
-        }
-
     def analyze(self, voltage_array, sensitivity):
-        if voltage_array is None or len(voltage_array) == 0:
-            print("⚠️ Empty voltage array received in analyze()")
-            return self.empty_result()
-
         acceleration_g = voltage_array / sensitivity
         acceleration_g = detrend(acceleration_g, type='linear')
         acceleration_m_s2 = acceleration_g * 9.80665
@@ -113,19 +85,27 @@ class Mcc172Backend:
         velocity_m_s = detrend(integrated[1]["acceleration"].to_numpy(), type='linear')
         displacement_m = detrend(integrated[2]["acceleration"].to_numpy(), type='linear')
 
+        # Filter velocity
         velocity_df = pd.DataFrame(velocity_m_s, index=df.index, columns=['velocity'])
         velocity_df = butterworth(velocity_df, low_cutoff=3, high_cutoff=500, half_order=3)
-        velocity_mm_s = velocity_df['velocity'].to_numpy() * 1000
+        velocity_m_s = velocity_df['velocity'].to_numpy()
+        velocity_mm_s = velocity_m_s * 1000
+        window_v = windows.hann(N)
+        velocity_windowed = velocity_mm_s * window_v
+        correction_v = np.sqrt(np.mean(window_v ** 2))
 
+        # Filter displacement
         displacement_df = pd.DataFrame(displacement_m, index=df.index, columns=['displacement'])
         displacement_df = butterworth(displacement_df, low_cutoff=3, high_cutoff=500, half_order=3)
         displacement_um = displacement_df['displacement'].to_numpy() * 1e6
+        window_d = windows.hann(N)
+        displacement_windowed = displacement_um * window_d
+        correction_d = np.sqrt(np.mean(window_d ** 2))
 
-        window = windows.hann(N)
-        fft_acc = fft(acceleration_g * window)
-        fft_vel = fft(velocity_mm_s * window)
-        fft_disp = fft(displacement_um * window)
-
+        # FFTs
+        fft_acc = fft(acceleration_g * windows.hann(N))
+        fft_vel = fft(velocity_windowed)
+        fft_disp = fft(displacement_windowed)
         freqs = fftfreq(N, T)
         pos_mask = freqs[:N // 2] <= 500
 
@@ -149,7 +129,7 @@ class Mcc172Backend:
             "fft_mags": fft_mags_acc[pos_mask],
             "fft_mags_vel": fft_mags_vel[pos_mask],
             "fft_mags_disp": fft_mags_disp[pos_mask],
-            "rms_fft": np.sqrt(np.sum((fft_mags_vel[pos_mask][1:] ** 2) / 2))
+            "rms_fft": np.sqrt(np.sum((fft_mags_vel[pos_mask][1:] ** 2) / 2)) / correction_v
         }
 
     def get_latest_waveform(self):
@@ -158,6 +138,7 @@ class Mcc172Backend:
             print("❌ No channel data available.")
             return [], [], [], [], 0, 0, 0, 0, 0
 
+        # Assuming the first valid channel's data is used for plotting
         ch = channel_data[0]
         result = self.analyze(ch["voltage"], ch["sensitivity"])
 

@@ -1,94 +1,134 @@
-# WaveformPage.py (final version with trace + window + dual-channel + full compatibility)
-
-# ... keep your imports here ...
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit,
-    QSizePolicy, QMenu, QStackedWidget, QComboBox, QDialog, QTableWidget, QTableWidgetItem
+    QSizePolicy, QMenu, QStackedWidget, QComboBox
 )
 from PyQt6.QtCore import Qt, QTimer, QDateTime
+from backend.mcc_backend import Mcc172Backend
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from pages.AnalysisParameters import AnalysisParameter
 from matplotlib.figure import Figure
 import numpy as np
-from backend.mcc_backend import Mcc172Backend
-from pages.AnalysisParameters import AnalysisParameter
 
 
 class WaveformPage(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
+        self.daq = Mcc172Backend(sample_rate=51200)
+        self.daq.setup()
+        # self.daq.start_acquisition()
+        # self.daq.auto_detect_channel()
         self.selected_quantity = "Acceleration"
-
-        self.ax_waveform = None
-        self.ax_top = None
-        self.ax_bottom = None
-        self.ax_ch1_waveform = None
-        self.ax_ch2_waveform = None
-        self.ax_ch1_spec = None
-        self.ax_ch2_spec = None
-        self.ax_spectrum = None
+        #self.is_running = False  # Measurement state tracker
 
         self.setup_ui()
+        self.selected_trace_mode = "readings_waveform"
+        self.top_selected_channel = 0
+        self.bottom_selected_channel = 1
+        
         self.start_clock()
+          # Default trace mode
+        
+
         self.timer = QTimer()
+
         self.timer.timeout.connect(self.update_plot)
 
     def setup_ui(self):
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
 
+        # Top Navbar
         nav_bar = QHBoxLayout()
         title_label = QLabel("Waveform & Spectrum")
         title_label.setStyleSheet("font-size: 1.5rem; font-weight: bold;")
         title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
         self.time_label = QLabel()
         self.time_label.setStyleSheet("font-weight: bold; font-size: 1rem;")
+
         nav_bar.addWidget(title_label)
         nav_bar.addWidget(self.time_label)
         self.main_layout.addLayout(nav_bar)
 
-        # Trace views
+        # Trace + Window dropdown logic (Step 1)
+        self.traces_button = QPushButton("Traces")
+        self.traces_menu = QMenu()
+
+        trace_modes = {
+            "Readings + Waveform": "readings_waveform",
+            "Waveform + Spectrum": "waveform_spectrum",
+            "Waveform + Waveform": "waveform_waveform",
+            "Spectrum + Spectrum": "spectrum_spectrum",
+            "Readings + Readings": "readings_readings",
+            "Readings + Spectrum": "readings_spectrum"
+        }
+
+        for label, mode in trace_modes.items():
+            self.traces_menu.addAction(label, lambda checked=False, m=mode: self.switch_trace_mode(m))
+
+        self.traces_button.setMenu(self.traces_menu)
+
+        trace_layout = QHBoxLayout()
+        trace_layout.addWidget(QLabel("Trace + Window:"))
+        trace_layout.addWidget(self.traces_button)
+        trace_layout.addStretch()
+        self.main_layout.addLayout(trace_layout)
+
+        # Step 2: Channel selectors (Top & Bottom)
+        self.top_channel_combo = QComboBox()
+        self.top_channel_combo.addItems(["Ch1", "Ch2", "Ch3", "Ch4", "Ch5", "Ch6"])
+        self.top_channel_combo.currentIndexChanged.connect(self.on_channel_change)
+
+        self.bottom_channel_combo = QComboBox()
+        self.bottom_channel_combo.addItems(["Ch1", "Ch2", "Ch3", "Ch4", "Ch5", "Ch6"])
+        self.bottom_channel_combo.currentIndexChanged.connect(self.on_channel_change)
+
+        channel_select_layout = QHBoxLayout()
+        channel_select_layout.addWidget(QLabel("Top Channel:"))
+        channel_select_layout.addWidget(self.top_channel_combo)
+        channel_select_layout.addSpacing(50)
+        channel_select_layout.addWidget(QLabel("Bottom Channel:"))
+        channel_select_layout.addWidget(self.bottom_channel_combo)
+        self.main_layout.addLayout(channel_select_layout)
+
+        # Views Area (stacked)
         self.stacked_views = QStackedWidget()
         self.default_view = self.build_readings_waveform_view()
         self.dual_view = self.build_waveform_spectrum_view()
-        self.dual_waveform_view = self.build_dual_waveform_view()
-        self.dual_spectrum_view = self.build_dual_spectrum_view()
-        self.readings_spectrum_view = self.build_readings_spectrum_view()
-        self.dual_readings_view = self.build_dual_readings_view()
 
-        self.stacked_views.addWidget(self.default_view)        # 0
-        self.stacked_views.addWidget(self.dual_view)           # 1
-        self.stacked_views.addWidget(self.dual_waveform_view)  # 2
-        self.stacked_views.addWidget(self.dual_spectrum_view)  # 3
-        self.stacked_views.addWidget(self.readings_spectrum_view)  # 4
-        self.stacked_views.addWidget(self.dual_readings_view)      # 5
+        self.stacked_views.addWidget(self.default_view)
+        self.stacked_views.addWidget(self.dual_view)
         self.main_layout.addWidget(self.stacked_views)
 
-        # Trace Navigation + Channel Select
-        self.trace_window_settings()
-
-        # Bottom controls
+        # Bottom Buttons
         bottom_buttons = QHBoxLayout()
-        for label in ["Traces", "Param", "Control", "Auto", "Cursor"]:
-            btn = QPushButton(label)
-            btn.setStyleSheet("background-color: #17a2b8; color: white; font-weight: bold;")
-            if label == "Traces":
-                self.traces_button = btn
-                self.traces_menu = QMenu()
-                for i, txt in enumerate([
-                    "Readings + Waveform", "Waveform + Spectrum", "Waveform (ch1 + ch2)",
-                    "Spectrum (ch1 + ch2)", "Readings + Spectrum", "Dual Readings"
-                ]):
-                    self.traces_menu.addAction(txt, lambda idx=i: self.switch_trace_mode(idx))
-                self.traces_button.setMenu(self.traces_menu)
-            elif label == "Param":
-                self.params_button = btn
-                self.params_Menu = QMenu(btn)
+        for label in ["Param", "Control", "Auto", "Cursor"]:
+            if label == "Param":
+                self.params_button = QPushButton("Param")
+                self.params_button.setStyleSheet("""
+                    background-color: #17a2b8;
+                    color: white;
+                    font-weight: bold;
+                    font-size: 1rem;
+                    padding: 8px;
+                    border-radius: 8px;
+                """)
+                self.params_Menu = QMenu(self.params_button)
                 self.params_Menu.addAction("Analysis Parameters", self.analysis_parameter)
-                self.params_Menu.addAction("Input channels", self.input_channels)
-                btn.setMenu(self.params_Menu)
-            bottom_buttons.addWidget(btn)
+                self.params_Menu.addAction("Input channels", lambda: self.on_param_selected("Input Channels"))
+                self.params_Menu.addAction("Output channels", lambda: self.on_param_selected("Output Channels"))
+                self.params_Menu.addAction("Tachometer", lambda: self.on_param_selected("Tachometer"))
+                self.params_Menu.addAction("Display Preferences", lambda: self.on_param_selected("Display Preferences"))
+                self.params_Menu.addAction("view Live Signals", lambda: self.on_param_selected("view Live Signals"))
+                self.params_button.setMenu(self.params_Menu)
+                bottom_buttons.addWidget(self.params_button)
+            else:
+                btn = QPushButton(label)
+                btn.setStyleSheet("background-color: #17a2b8; color: white; font-weight: bold;")
+                bottom_buttons.addWidget(btn)
 
+        # Start/Stop buttons
         self.start_button = QPushButton("Start Meas.")
         self.start_button.setStyleSheet("background-color: green; color: white; font-weight: bold;")
         self.start_button.clicked.connect(self.start_measurement)
@@ -102,234 +142,109 @@ class WaveformPage(QWidget):
 
         self.main_layout.addLayout(bottom_buttons)
 
-    def trace_window_settings(self):
-        nav_layout = QHBoxLayout()
-        self.prev_trace_btn = QPushButton("←")
-        self.next_trace_btn = QPushButton("→")
-        self.prev_trace_btn.clicked.connect(self.prev_trace)
-        self.next_trace_btn.clicked.connect(self.next_trace)
-        self.trace_combo = QComboBox()
-        self.trace_combo.addItems([
-            "Readings + Waveform", "Waveform + Spectrum", "Waveform (ch1 + ch2)",
-            "Spectrum (ch1 + ch2)", "Readings + Spectrum", "Dual Readings"
-        ])
-        self.trace_combo.currentIndexChanged.connect(self.switch_trace_mode)
-        nav_layout.addWidget(self.prev_trace_btn)
-        nav_layout.addWidget(QLabel("Select Trace View:"))
-        nav_layout.addWidget(self.trace_combo)
-        nav_layout.addWidget(self.next_trace_btn)
+    def on_channel_change(self):
+        self.top_selected_channel = self.top_channel_combo.currentIndex()
+        self.bottom_selected_channel = self.bottom_channel_combo.currentIndex()
+    
+    def get_selected_channel_configs(self):
+        configs = []
 
-        ch_layout = QHBoxLayout()
-        ch_layout.addWidget(QLabel("Top View Channel:"))
-        self.top_channel_combo = QComboBox()
-        self.top_channel_combo.addItems([f"CH{i+1}" for i in range(6)])
-        self.top_channel_combo.currentIndexChanged.connect(self.update_top_channel)
-        ch_layout.addWidget(self.top_channel_combo)
+        mode = self.selected_trace_mode
 
-        ch_layout.addSpacing(20)
-        ch_layout.addWidget(QLabel("Bottom View Channel:"))
-        self.bottom_channel_combo = QComboBox()
-        self.bottom_channel_combo.addItems([f"CH{i+1}" for i in range(6)])
-        self.bottom_channel_combo.currentIndexChanged.connect(self.update_bottom_channel)
-        ch_layout.addWidget(self.bottom_channel_combo)
+        if mode in ["readings_waveform", "waveform_spectrum", "readings_readings", "readings_spectrum"]:
+            # Only top channel needed
+            configs.append({
+                "board_num": self.top_selected_channel // 2,
+                "channel": self.top_selected_channel % 2,
+                "sensitivity": 0.1
+            })
+        elif mode in ["waveform_waveform", "spectrum_spectrum"]:
+            # Both top and bottom channels needed
+            if self.top_selected_channel != self.bottom_selected_channel:
+                configs.append({
+                    "board_num": self.top_selected_channel // 2,
+                    "channel": self.top_selected_channel % 2,
+                    "sensitivity": 0.1
+                })
+                configs.append({
+                    "board_num": self.bottom_selected_channel // 2,
+                    "channel": self.bottom_selected_channel % 2,
+                    "sensitivity": 0.1
+                })
+            else:
+                # Same channel selected for both top and bottom (edge case)
+                configs.append({
+                    "board_num": self.top_selected_channel // 2,
+                    "channel": self.top_selected_channel % 2,
+                    "sensitivity": 0.1
+                })
+        else:
+            print(f"⚠️ Unrecognized trace mode '{mode}', defaulting to top channel only.")
+            configs.append({
+                "board_num": self.top_selected_channel // 2,
+                "channel": self.top_selected_channel % 2,
+                "sensitivity": 0.1
+            })
+        print("configured channels:",configs)
 
-        self.main_layout.insertLayout(1, nav_layout)
-        self.main_layout.insertLayout(2, ch_layout)
-
-        self.current_trace_index = 0
-        self.current_top_channel = 0
-        self.current_bottom_channel = 1
-        self.top_channel_combo.currentIndexChanged.connect(self.restart_measurement)
-        self.bottom_channel_combo.currentIndexChanged.connect(self.restart_measurement)
-
-    def restart_measurement(self):
-        self.stop_measurement()
-        self.start_measurement()
+        return configs
+    
 
 
-    def prev_trace(self): self.trace_combo.setCurrentIndex((self.trace_combo.currentIndex() - 1) % 6)
-    def next_trace(self): self.trace_combo.setCurrentIndex((self.trace_combo.currentIndex() + 1) % 6)
-    def switch_trace_mode(self, index): self.stacked_views.setCurrentIndex(index)
-
-    def update_top_channel(self, idx): self.current_top_channel = idx
-    def update_bottom_channel(self, idx): self.current_bottom_channel = idx
-
-    def start_clock(self):
-        self.clock = QTimer()
-        self.clock.timeout.connect(self.update_time)
-        self.clock.start(1000)
-        self.update_time()
-
-    def update_time(self):
-        now = QDateTime.currentDateTime()
-        self.time_label.setText(now.toString("HH:mm:ss"))
+    def on_param_selected(self, option):
+        pass
 
     def analysis_parameter(self):
         self.popup = AnalysisParameter(self)
         self.popup.show()
 
-    def input_channels(self):
-        self.popup_input_channels = InputChannelsDialog(self)
-        if self.popup_input_channels.exec():
-            self.channel_configs = self.popup_input_channels.channel_config
-            print("Received channel configuration in WaveformPage:")
-            for config in self.channel_configs:
-                print(config)
-
-    def get_enabled_channels(self):
-            selected = set([self.current_top_channel, self.current_bottom_channel])
-            configs = []
-
-            if not hasattr(self, 'channel_configs'):
-                return configs
-
-            for ch in selected:
-                for cfg in self.channel_configs:
-                    if cfg["ch"] == ch + 1:  # ch is 0-indexed, cfg["ch"] is 1-indexed
-                        board = (ch) // 2
-                        local_ch = (ch) % 2
-                        sens = float(cfg["sensitivity"].split(" ")[0])
-                        configs.append({
-                            "board_num": board,
-                            "channel": local_ch,
-                            "sensitivity": sens
-                        })
-            return configs
-
-
-
-
-
-
-    # def get_enabled_channels(self):
-    #     enabled_channels = []
-    #     if not hasattr(self, 'channel_configs'): return enabled_channels
-    #     for config in self.channel_configs:
-    #         try:
-    #             ch = int(config["ch"])
-    #             board = (ch - 1) // 2
-    #             local_ch = (ch - 1) % 2
-    #             sens = float(config["sensitivity"].split(" ")[0])
-    #             enabled_channels.append({"board_num": board, "channel": local_ch, "sensitivity": sens})
-    #         except: pass
-    #     return enabled_channels
-
-    def start_measurement(self):
-        enabled_channels = self.get_enabled_channels()
-        if not enabled_channels:
-            print("No enabled channels found.")
-            return
-        selected_indices = [cfg['board_num'] * 2 + cfg['channel'] for cfg in enabled_channels]
-        self.daq = Mcc172Backend(channel_configs=enabled_channels, selected_channels=selected_indices, sample_rate=51200)
-        self.daq.setup()
-        self.daq.start_acquisition()
-        self.timer.start(1000)
-        self.start_button.setVisible(False)
-        self.stop_button.setVisible(True)
-
-    def stop_measurement(self):
-        self.daq.stop_scan()
-        self.timer.stop()
-        self.start_button.setVisible(True)
-        self.stop_button.setVisible(False)
-        print("Measurement stopped.")
-
-    
     def build_readings_waveform_view(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
+
         readings_layout = QHBoxLayout()
         self.acc_input = self.create_reading_box("Acc:", "g (peak)")
         self.vel_input = self.create_reading_box("Vel:", "mm/s (RMS)")
         self.disp_input = self.create_reading_box("Disp:", "µm (P-P)")
         self.freq_input = self.create_reading_box("Freq:", "Hz")
+
         for box in [self.acc_input, self.vel_input, self.disp_input, self.freq_input]:
             readings_layout.addLayout(box["layout"])
         layout.addLayout(readings_layout)
-        self.figure_waveform = Figure()
+
+        self.figure_waveform = Figure(figsize=(6, 3))
         self.canvas_waveform = FigureCanvas(self.figure_waveform)
         self.ax_waveform = self.figure_waveform.add_subplot(111)
+        self.canvas_waveform.mpl_connect("button_press_event", self.on_waveform_click)
         layout.addWidget(self.canvas_waveform)
         return widget
 
     def build_waveform_spectrum_view(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        self.figure_top = Figure()
+
+        self.figure_top = Figure(figsize=(6, 3))
         self.canvas_top = FigureCanvas(self.figure_top)
         self.ax_top = self.figure_top.add_subplot(111)
+        self.canvas_top.mpl_connect("button_press_event", self.on_waveform_click)
         layout.addWidget(self.canvas_top)
-        self.figure_bottom = Figure()
+
+        self.figure_bottom = Figure(figsize=(6, 3))
         self.canvas_bottom = FigureCanvas(self.figure_bottom)
         self.ax_bottom = self.figure_bottom.add_subplot(111)
+        self.canvas_bottom.mpl_connect("button_press_event", self.on_fft_click)
         layout.addWidget(self.canvas_bottom)
-        return widget
 
+        return widget
     def build_dual_waveform_view(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        self.fig_waveform_ch = Figure()
-        self.canvas_waveform_ch = FigureCanvas(self.fig_waveform_ch)
-        self.ax_ch1_waveform = self.fig_waveform_ch.add_subplot(211)
-        self.ax_ch2_waveform = self.fig_waveform_ch.add_subplot(212)
-        layout.addWidget(self.canvas_waveform_ch)
-        return widget
-
+        pass
     def build_dual_spectrum_view(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        self.fig_fft_ch = Figure()
-        self.canvas_fft_ch = FigureCanvas(self.fig_fft_ch)
-        self.ax_ch1_spec = self.fig_fft_ch.add_subplot(211)
-        self.ax_ch2_spec = self.fig_fft_ch.add_subplot(212)
-        layout.addWidget(self.canvas_fft_ch)
-        return widget
-
-    def build_readings_spectrum_view(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        readings_layout = QHBoxLayout()
-        self.acc_input = self.create_reading_box("Acc:", "g (peak)")
-        self.vel_input = self.create_reading_box("Vel:", "mm/s (RMS)")
-        self.disp_input = self.create_reading_box("Disp:", "µm (P-P)")
-        self.freq_input = self.create_reading_box("Freq:", "Hz")
-        for box in [self.acc_input, self.vel_input, self.disp_input, self.freq_input]:
-            readings_layout.addLayout(box["layout"])
-        layout.addLayout(readings_layout)
-        self.figure_spectrum = Figure()
-        self.canvas_spectrum = FigureCanvas(self.figure_spectrum)
-        self.ax_spectrum = self.figure_spectrum.add_subplot(111)
-        layout.addWidget(self.canvas_spectrum)
-        return widget
-    
+        pass
     def build_dual_readings_view(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+        pass
+    def trace_window_settings(self):
+        pass
 
-        # CH1 readings
-        ch1_layout = QHBoxLayout()
-        self.ch1_acc = self.create_reading_box("Ch1 Acc:", "g (peak)")
-        self.ch1_vel = self.create_reading_box("Ch1 Vel:", "mm/s (RMS)")
-        self.ch1_disp = self.create_reading_box("Ch1 Disp:", "µm (P-P)")
-        self.ch1_freq = self.create_reading_box("Ch1 Freq:", "Hz")
-        for box in [self.ch1_acc, self.ch1_vel, self.ch1_disp, self.ch1_freq]:
-            ch1_layout.addLayout(box["layout"])
-        layout.addLayout(ch1_layout)
-
-        # CH2 readings
-        ch2_layout = QHBoxLayout()
-        self.ch2_acc = self.create_reading_box("Ch2 Acc:", "g (peak)")
-        self.ch2_vel = self.create_reading_box("Ch2 Vel:", "mm/s (RMS)")
-        self.ch2_disp = self.create_reading_box("Ch2 Disp:", "µm (P-P)")
-        self.ch2_freq = self.create_reading_box("Ch2 Freq:", "Hz")
-        for box in [self.ch2_acc, self.ch2_vel, self.ch2_disp, self.ch2_freq]:
-            ch2_layout.addLayout(box["layout"])
-        layout.addLayout(ch2_layout)
-
-        return widget
-
-
-    
 
     def create_reading_box(self, label_text, unit_text):
         layout = QVBoxLayout()
@@ -346,128 +261,252 @@ class WaveformPage(QWidget):
         layout.addWidget(input_field)
         layout.addWidget(unit_label)
         return {"layout": layout, "input": input_field}
-   
+
+    def start_clock(self):
+        self.clock = QTimer()
+        self.clock.timeout.connect(self.update_time)
+        self.clock.start(1000)
+        self.update_time()
+
+    def update_time(self):
+        now = QDateTime.currentDateTime()
+        self.time_label.setText(now.toString("HH:mm:ss"))
+
+    def switch_trace_mode(self, mode):
+        self.selected_trace_mode = mode
+        print(f"Selected Trace Mode: {mode}")
+
+        if mode == "readings_waveform":
+            self.stacked_views.setCurrentIndex(0)  # Top: Readings, Bottom: Waveform
+
+        elif mode == "waveform_spectrum":
+            self.stacked_views.setCurrentIndex(1)  # Top: Waveform, Bottom: Spectrum
+
+        elif mode in ["waveform_waveform", "spectrum_spectrum", "readings_readings", "readings_spectrum"]:
+            dual_view = QWidget()
+            layout = QVBoxLayout(dual_view)
+
+            self.fig_top = Figure(figsize=(6, 3))
+            self.canvas_top = FigureCanvas(self.fig_top)
+            self.ax_top = self.fig_top.add_subplot(111)
+            layout.addWidget(self.canvas_top)
+
+            self.fig_bottom = Figure(figsize=(6, 3))
+            self.canvas_bottom = FigureCanvas(self.fig_bottom)
+            self.ax_bottom = self.fig_bottom.add_subplot(111)
+            layout.addWidget(self.canvas_bottom)
+
+            self.stacked_views.addWidget(dual_view)
+            self.stacked_views.setCurrentWidget(dual_view)
+
+        else:
+            print(f"🧩 Trace mode '{mode}' is not implemented.")
+
+
+
+    def set_active_channels(self, configs):
+        self.active_configs = configs
+    
+
+
+    """
+    def start_measurement(self):
+        if not self.is_running:
+            self.daq.start_acquisition()
+            self.timer.start(1000)
+            self.is_running = True
+            self.start_button.setVisible(False)
+            self.stop_button.setVisible(True)
+            print("️Measurement started.")
+        else:
+            print("Measurement is already running.")
+""" 
+    def start_measurement(self):
+    # Step 1: Get selected channels
+        selected_configs = self.get_selected_channel_configs()
+
+        # Step 2: Update backend
+        self.daq.set_active_channels(selected_configs)  # This method should be in your backend
+
+        # Step 3: Setup and start
+        self.daq.setup()
+        self.daq.start_acquisition()
+        self.timer.start(1000)
+
+        # Step 4: Update UI state
+        self.start_button.setVisible(False)
+        self.stop_button.setVisible(True)
+
+        print("📡 Measurement started with channels:")
+        for cfg in selected_configs:
+            print(f"   → Board {cfg['board_num']} Channel {cfg['channel']}")
+
+
+
+    def stop_measurement(self):
+        self.daq.stop_scan()
+        self.timer.stop()
+        #self.is_running = False
+        self.start_button.setVisible(True)
+        self.stop_button.setVisible(False)
+        print("Measurement stopped.")
+
     def update_plot(self):
         results = self.daq.get_latest_waveform()
-        print(f"Results received: {len(results)} channels")
-        if not results or len(results) < 2: return
 
-        top_idx = self.current_top_channel
-        bottom_idx = self.current_bottom_channel
-        if max(top_idx, bottom_idx) >= len(results): return
-
-        top = results[top_idx]
-        bottom = results[bottom_idx]
-
-        def extract(res): return res[0], res[1], res[2], res[3], res[9], res[10], res[11], res[12], res[13], res[14]
-        t1, a1, v1, d1, fx1, fa1, fxv1, fv1, fxd1, fd1 = extract(top)
-        t2, a2, v2, d2, fx2, fa2, fxv2, fv2, fxd2, fd2 = extract(bottom)
-
-        if self.selected_quantity == "Acceleration":
-            y1, y2, fft1, fft2, f1, f2 = a1, a2, fa1, fa2, fx1, fx2
-        elif self.selected_quantity == "Velocity":
-            y1, y2, fft1, fft2, f1, f2 = v1, v2, fv1, fv2, fxv1, fxv2
-        elif self.selected_quantity == "Displacement":
-            y1, y2, fft1, fft2, f1, f2 = d1, d2, fd1, fd2, fxd1, fxd2
-        else:
+        if not results or len(results) == 0:
+            print("⚠️ No data received.")
             return
 
-        idx = self.trace_combo.currentIndex()
-        if idx == 0 and self.ax_waveform:
+        mode = self.selected_trace_mode
+        num_results = len(results)
+
+        if mode in ["waveform_waveform", "spectrum_spectrum", "readings_readings"]:
+            top_result = results[0]
+            bottom_result = results[1] if num_results == 2 else results[0]
+        else:
+            top_result = results[0]
+            bottom_result = None
+
+        # Extract readings
+        acc_peak = top_result.get("acc_peak", 0)
+        acc_rms = top_result.get("acc_rms", 0)
+        vel_rms = top_result.get("vel_rms", 0)
+        disp_pp = top_result.get("disp_pp", 0)
+        dom_freq = top_result.get("dom_freq", 0)
+        rms_fft = top_result.get("rms_fft", 0)
+
+        def get_y_and_label(result):
+            if self.selected_quantity == "Velocity":
+                return result["velocity"], "Velocity (mm/s)", result["fft_freqs_vel"], result["fft_mags_vel"]
+            elif self.selected_quantity == "Displacement":
+                return result["displacement"], "Displacement (μm)", result["fft_freqs_disp"], result["fft_mags_disp"]
+            else:
+                return result["accel"], "Acceleration (g)", result["fft_freqs"], result["fft_mags"]
+
+        if mode == "readings_waveform":
+            y_data, y_label, _, _ = get_y_and_label(top_result)
+            t = top_result["t"]
             self.ax_waveform.clear()
-            self.ax_waveform.plot(t1, y1)
+            self.ax_waveform.plot(t, y_data)
+            self.ax_waveform.set(title="Waveform", xlabel="Time (s)", ylabel=y_label)
+            margin = (max(y_data) - min(y_data)) * 0.1 or 0.2
+            self.ax_waveform.set_ylim(min(y_data) - margin, max(y_data) + margin)
+            self.ax_waveform.grid(True)
             self.canvas_waveform.draw()
-        elif idx == 1 and self.ax_top and self.ax_bottom:
-            self.ax_top.clear(); self.ax_top.plot(t1, y1)
-            self.ax_bottom.clear(); self.ax_bottom.plot(f1, fft1)
-            self.canvas_top.draw(); self.canvas_bottom.draw()
-        elif idx == 2 and self.ax_ch1_waveform and self.ax_ch2_waveform:
-            self.ax_ch1_waveform.clear(); self.ax_ch1_waveform.plot(t1, y1)
-            self.ax_ch2_waveform.clear(); self.ax_ch2_waveform.plot(t2, y2)
-            self.canvas_waveform_ch.draw()
-        elif idx == 3 and self.ax_ch1_spec and self.ax_ch2_spec:
-            self.ax_ch1_spec.clear(); self.ax_ch1_spec.plot(f1, fft1)
-            self.ax_ch2_spec.clear(); self.ax_ch2_spec.plot(f2, fft2)
-            self.canvas_fft_ch.draw()
-        elif idx == 4 and self.ax_spectrum:
-            self.ax_spectrum.clear()
-            self.ax_spectrum.plot(f1, fft1)
-            self.canvas_spectrum.draw()
-        elif idx == 5:  # Dual Readings View
-            self.ch1_acc["input"].setText(f"{top[4]:.2f}")
-            self.ch1_vel["input"].setText(f"{top[6]:.2f}")
-            self.ch1_disp["input"].setText(f"{top[7]:.2f}")
-            self.ch1_freq["input"].setText(f"{top[8]:.2f}")
 
-            self.ch2_acc["input"].setText(f"{bottom[4]:.2f}")
-            self.ch2_vel["input"].setText(f"{bottom[6]:.2f}")
-            self.ch2_disp["input"].setText(f"{bottom[7]:.2f}")
-            self.ch2_freq["input"].setText(f"{bottom[8]:.2f()}")
+        elif mode == "waveform_spectrum":
+            y_data, y_label, _, _ = get_y_and_label(top_result)
+            t = top_result["t"]
+            self.ax_top.clear()
+            self.ax_top.plot(t, y_data)
+            self.ax_top.set(title="Waveform", xlabel="Time (s)", ylabel=y_label)
+            margin = (max(y_data) - min(y_data)) * 0.1 or 0.2
+            self.ax_top.set_ylim(min(y_data) - margin, max(y_data) + margin)
+            self.ax_top.grid(True)
+            self.canvas_top.draw()
+
+            _, y_label_b, fft_freqs, fft_mags = get_y_and_label(bottom_result or top_result)
+            self.ax_bottom.clear()
+            self.ax_bottom.plot(fft_freqs, fft_mags)
+            self.ax_bottom.set(title="Spectrum", xlabel="Frequency (Hz)", ylabel=f"{y_label_b} RMS")
+            self.ax_bottom.grid(True)
+            self.canvas_bottom.draw()
+
+        elif mode == "waveform_waveform":
+            y1, label1, _, _ = get_y_and_label(top_result)
+            y2, label2, _, _ = get_y_and_label(bottom_result or top_result)
+            t1 = top_result["t"]
+            t2 = bottom_result["t"] if bottom_result else t1
+
+            self.ax_top.clear()
+            self.ax_top.plot(t1, y1)
+            self.ax_top.set(title="Waveform - Top", ylabel=label1)
+            self.ax_top.grid(True)
+
+            self.ax_bottom.clear()
+            self.ax_bottom.plot(t2, y2)
+            self.ax_bottom.set(title="Waveform - Bottom", ylabel=label2)
+            self.ax_bottom.grid(True)
+
+            self.canvas_top.draw()
+            self.canvas_bottom.draw()
+
+        elif mode == "spectrum_spectrum":
+            f1 = top_result["fft_freqs"]
+            m1 = top_result["fft_mags"]
+            f2 = bottom_result["fft_freqs"] if bottom_result else f1
+            m2 = bottom_result["fft_mags"] if bottom_result else m1
+
+            self.ax_top.clear()
+            self.ax_top.plot(f1, m1)
+            self.ax_top.set(title="Spectrum - Top", ylabel="Magnitude")
+            self.ax_top.grid(True)
+
+            self.ax_bottom.clear()
+            self.ax_bottom.plot(f2, m2)
+            self.ax_bottom.set(title="Spectrum - Bottom", ylabel="Magnitude")
+            self.ax_bottom.grid(True)
+
+            self.canvas_top.draw()
+            self.canvas_bottom.draw()
+
+        elif mode == "readings_readings":
+            self.acc_input["input"].setText(f"{top_result['acc_peak']:.2f}")
+            self.vel_input["input"].setText(f"{top_result['vel_rms']:.2f}")
+            self.disp_input["input"].setText(f"{top_result['disp_pp']:.2f}")
+            self.freq_input["input"].setText(f"{top_result['dom_freq']:.2f}")
+            print(f"CH2 → Acc: {bottom_result['acc_peak']:.2f}, Vel: {bottom_result['vel_rms']:.2f}, "
+                f"Disp: {bottom_result['disp_pp']:.2f}, Freq: {bottom_result['dom_freq']:.2f}")
+
+        elif mode == "readings_spectrum":
+            self.acc_input["input"].setText(f"{top_result['acc_peak']:.2f}")
+            self.vel_input["input"].setText(f"{top_result['vel_rms']:.2f}")
+            self.disp_input["input"].setText(f"{top_result['disp_pp']:.2f}")
+            self.freq_input["input"].setText(f"{top_result['dom_freq']:.2f}")
+
+            f2 = bottom_result["fft_freqs"] if bottom_result else top_result["fft_freqs"]
+            m2 = bottom_result["fft_mags"] if bottom_result else top_result["fft_mags"]
+
+            self.ax_bottom.clear()
+            self.ax_bottom.plot(f2, m2)
+            self.ax_bottom.set(title="Spectrum (Bottom)")
+            self.ax_bottom.grid(True)
+            self.canvas_bottom.draw()
+
+        else:
+            print(f"🧩 Trace mode '{mode}' not yet implemented in update_plot()")
+
+        # Always update top reading boxes with top_result
+        self.acc_input["input"].setText(f"{acc_peak:.2f}")
+        self.vel_input["input"].setText(f"{rms_fft:.2f}")
+        self.disp_input["input"].setText(f"{disp_pp:.2f}")
+        self.freq_input["input"].setText(f"{dom_freq:.2f}")
 
 
-class InputChannelsDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Input Channel and Sensor Configuration")
-        self.setMinimumSize(600, 300)
 
-        self.table = QTableWidget(6, 5)
-        self.table.setHorizontalHeaderLabels(["Ch.", "Sensitivity", "Input Mode", "HP Fltr"])
-        self.table.verticalHeader().setVisible(False)
+    def on_waveform_click(self, event):
+        if not hasattr(self, 't') or event.inaxes not in [self.ax_waveform, self.ax_top]:
+            return
+        x = event.xdata
+        idx = min(range(len(self.t)), key=lambda i: abs(self.t[i] - x))
+        t_val = self.t[idx]
+        y_val = self.accel[idx]
+        event.inaxes.annotate(f"({t_val:.3f}s, {y_val:.3f}g)", (t_val, y_val),
+                              textcoords="offset points", xytext=(10, 10),
+                              arrowprops=dict(arrowstyle="->", color='red'),
+                              fontsize=9, color='red')
+        event.canvas.draw()
 
-        # Sample data
-        default_data = [
-            ["1", "0.1 g", "IEPE", "1Hz"],
-            ["2", "0.1 g", "IEPE", "1Hz"],
-            ["3", "0.1 g", "IEPE", "1Hz"],
-            ["4", "0.1 g", "IEPE", "1Hz"],
-            ["5", "0.1 g", "IEPE", "1Hz"],
-            ["6", "0.1 g", "IEPE", "1Hz"]
-        ]
-
-        # Fill table
-        # for row, row_data in enumerate(default_data):
-        #     for col, value in enumerate(row_data):
-        #         if col == 4:  # Status column → dropdown
-        #             combo = QComboBox()
-        #             combo.addItems(["ON", "OFF"])
-        #             combo.setCurrentText(value)
-        #             self.table.setCellWidget(row, col, combo)
-        #         else:
-        #             item = QTableWidgetItem(value)
-        #             if col == 0:
-        #                 item.setFlags(item.flags() ^ Qt.ItemFlag.ItemIsEditable)  # Make Ch. read-only
-        #             self.table.setItem(row, col, item)
-
-        layout = QVBoxLayout()
-        layout.addWidget(self.table)
-
-        # Apply Button
-        apply_btn = QPushButton("Apply")
-        apply_btn.clicked.connect(self.apply_and_close)
-        layout.addWidget(apply_btn)
-
-        self.setLayout(layout)
-
-    def apply_and_close(self):
-        self.channel_config = []
-        for row in range(self.table.rowCount()):
-            ch = self.table.item(row, 0).text()
-            sensitivity = self.table.item(row, 1).text()
-            input_mode = self.table.item(row, 2).text()
-            hp_filter = self.table.item(row, 3).text()
-            
-            self.channel_config.append({
-                "ch": int(ch),
-                "sensitivity": sensitivity,
-                "input_mode": input_mode,
-                "hp_filter": hp_filter,
-                
-            })
-
-        print("Collected Channel Configurations:")
-        for config in self.channel_config:
-            print(config)
-
-        self.accept()  # Close dialog
-
+    def on_fft_click(self, event):
+        if not hasattr(self, 'freqs') or event.inaxes != self.ax_bottom:
+            return
+        x = event.xdata
+        idx = min(range(len(self.freqs)), key=lambda i: abs(self.freqs[i] - x))
+        f_val = self.freqs[idx]
+        mag = self.fft_mags[idx]
+        self.ax_bottom.annotate(f"({f_val:.1f} Hz, {mag:.3f})", (f_val, mag),
+                                textcoords="offset points", xytext=(10, 10),
+                                arrowprops=dict(arrowstyle="->", color='green'),
+                                fontsize=9, color='green')
+        self.canvas_bottom.draw()

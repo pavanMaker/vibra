@@ -9,34 +9,19 @@ from endaq.calc.stats import rms
 
 
 class Mcc172Backend:
-    def __init__(self, board_num=0, sample_rate=51200, sensitivity=0.1, channel=[0,1]):
+    def __init__(self, board_num=0, sample_rate=51200, sensitivity=0.1, channel=[0, 1]):
         self.board_num = board_num
         self.sample_rate = sample_rate
         self.sensitivity = sensitivity
-        self.channel = channel #if channel is not None else self.auto_detect_channel()
+        self.channel = channel
         self.board = mcc172(board_num)
         self.buffer_size = None
         self.actual_rate = None
 
-    # def auto_detect_channel(self):
-    #     for ch in [0, 1]:
-    #         self.board.iepe_config_write(ch, 1)
-    #         self.board.a_in_clock_config_write(SourceType.LOCAL, self.sample_rate)
-    #         _, actual_rate, _ = self.board.a_in_clock_config_read()
-    #         buffer_size = 2 ** int(np.floor(np.log2(actual_rate * 10)))
-    #         self.board.a_in_scan_start(1 << ch, buffer_size, OptionFlags.CONTINUOUS)
-    #         result = self.board.a_in_scan_read_numpy(-1, timeout=5.0)
-    #         self.board.a_in_scan_stop()
-    #         if result and np.any(result.data):
-    #             print(f"IEPE is connected to channel {ch}")
-    #             return ch
-    #     print("No IEPE sensor is connected")
-    #     return 0
-
     def setup(self):
         for ch in self.channel:
-            self.board.iepe_config_write(ch,1)
-        
+            self.board.iepe_config_write(ch, 1)
+
         self.board.a_in_clock_config_write(SourceType.LOCAL, self.sample_rate)
         _, self.actual_rate, _ = self.board.a_in_clock_config_read()
         self.buffer_size = 196608
@@ -46,10 +31,9 @@ class Mcc172Backend:
         channel_mask = 0
         for i in self.channel:
             channel_mask |= (1 << i)
-        print("channel_mask:",channel_mask)
-        self.board.a_in_scan_start(channel_mask, self.buffer_size,OptionFlags.CONTINUOUS)
+        print("channel_mask:", channel_mask)
+        self.board.a_in_scan_start(channel_mask, self.buffer_size, OptionFlags.CONTINUOUS)
 
-       
     def stop_scan(self):
         self.board.a_in_scan_stop()
         self.board.a_in_scan_cleanup()
@@ -66,37 +50,40 @@ class Mcc172Backend:
             if data.ndim == 2 and data.shape[0] == 2:
                 ch0_voltage = data[0].flatten()
                 ch1_voltage = data[1].flatten()
-
             elif data.ndim == 1 and data.shape[0] == 2 * self.buffer_size:
                 ch0_voltage = data[0::2]
                 ch1_voltage = data[1::2]
                 print("✅ Split interleaved data manually.")
-
-            elif data.ndim == 1:
+            elif data.ndim == 1 and data.shape[0] > 0:
                 print("⚠️ Only one channel returned, assuming CH0 only.")
                 ch0_voltage = data.flatten()
                 ch1_voltage = np.zeros_like(ch0_voltage)
-
             else:
                 print("❌ Unexpected data format. Filling with zeros.")
                 ch0_voltage = np.zeros(self.buffer_size)
                 ch1_voltage = np.zeros(self.buffer_size)
 
-            # Log voltage stats for debugging
+            # Safe voltage stats logging
             print("\n📊 CH0 Voltage Stats:")
-            print(f"   → Min: {np.min(ch0_voltage):.3f} V")
-            print(f"   → Max: {np.max(ch0_voltage):.3f} V")
-            print(f"   → Mean: {np.mean(ch0_voltage):.3f} V")
+            if ch0_voltage.size > 0:
+                print(f"   → Min: {np.min(ch0_voltage):.3f} V")
+                print(f"   → Max: {np.max(ch0_voltage):.3f} V")
+                print(f"   → Mean: {np.mean(ch0_voltage):.3f} V")
+            else:
+                print("   ⚠️ No CH0 data available")
 
             print("\n📊 CH1 Voltage Stats:")
-            print(f"   → Min: {np.min(ch1_voltage):.3f} V")
-            print(f"   → Max: {np.max(ch1_voltage):.3f} V")
-            print(f"   → Mean: {np.mean(ch1_voltage):.3f} V")
+            if ch1_voltage.size > 0:
+                print(f"   → Min: {np.min(ch1_voltage):.3f} V")
+                print(f"   → Max: {np.max(ch1_voltage):.3f} V")
+                print(f"   → Mean: {np.mean(ch1_voltage):.3f} V")
+            else:
+                print("   ⚠️ No CH1 data available")
 
             return ch0_voltage, ch1_voltage
 
         print("❌ No valid data received.")
-        return np.zeros(self.buffer_size), np.zeros(self.buffer_size)
+        return np.zeros(0), np.zeros(0)
 
     def analyze(self, result_data):
         # Convert voltage to acceleration in g
@@ -220,9 +207,29 @@ class Mcc172Backend:
         ch0_voltage, ch1_voltage = self.read_data()
 
         print(f"\n🔍 Analyzing Channel 0")
-        result_ch0 = self.analyze(ch0_voltage)
+        result_ch0 = self.analyze(ch0_voltage) if ch0_voltage.size > 0 else self._empty_result()
 
         print(f"\n🔍 Analyzing Channel 1")
-        result_ch1 = self.analyze(ch1_voltage)
+        result_ch1 = self.analyze(ch1_voltage) if ch1_voltage.size > 0 else self._empty_result()
 
         return result_ch0, result_ch1
+
+    def _empty_result(self):
+        return {
+            "acceleration": np.array([]),
+            "velocity": np.array([]),
+            "displacement": np.array([]),
+            "time": np.array([]),
+            "acc_peak": 0.0,
+            "acc_rms": 0.0,
+            "vel_rms": 0.0,
+            "disp_pp": 0.0,
+            "dom_freq": 0.0,
+            "fft_freqs": np.array([]),
+            "fft_mags": np.array([]),
+            "freqs_vel": np.array([]),
+            "fft_mags_vel": np.array([]),
+            "fft_freqs_disp": np.array([]),
+            "fft_mags_disp": np.array([]),
+            "rms_fft": 0.0
+        }

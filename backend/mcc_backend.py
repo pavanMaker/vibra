@@ -85,7 +85,7 @@ class Mcc172Backend:
         print("❌ No valid data received.")
         return np.zeros(0), np.zeros(0)
 
-    def analyze(self, result_data):
+    def analyze(self, result_data,fmax_hz=500):
         # Convert voltage to acceleration in g
         acceleration_g = result_data / self.sensitivity
         acceleration_g = detrend(acceleration_g, type='linear')  # Remove trend
@@ -108,7 +108,7 @@ class Mcc172Backend:
         # Step 2: Bandpass filter for velocity
         # Applied band pass filter using Butterworth filter
         velocity_df = pd.DataFrame(velocity_m_s, index=df.index, columns=['velocity'])
-        velocity_df = butterworth(velocity_df, low_cutoff=3, high_cutoff=500, half_order=3)
+        velocity_df = butterworth(velocity_df, low_cutoff=3, high_cutoff=fmax_hz, half_order=3)
         velocity_m_s = velocity_df['velocity'].to_numpy()
 
         # Step 3: Apply Hanning window before FFT
@@ -122,7 +122,7 @@ class Mcc172Backend:
 
         # Step 5: Bandpass filter for displacement
         displacement_df = pd.DataFrame(displacement_m, index=df.index, columns=['displacement'])
-        displacement_df = butterworth(displacement_df, low_cutoff=3, high_cutoff=500, half_order=3)
+        displacement_df = butterworth(displacement_df, low_cutoff=3, high_cutoff=fmax_hz, half_order=3)
         displacement_m_s = displacement_df['displacement'].to_numpy()
 
         displacement_um = displacement_m_s * 1e6  # Convert to µm
@@ -203,14 +203,14 @@ class Mcc172Backend:
             "rms_fft": rms_fft
         }
 
-    def get_latest_waveform(self):
+    def get_latest_waveform(self,fmax_hz=500):
         ch0_voltage, ch1_voltage = self.read_data()
 
         print(f"\n🔍 Analyzing Channel 0")
-        result_ch0 = self.analyze(ch0_voltage) if ch0_voltage.size > 0 else self._empty_result()
+        result_ch0 = self.analyze(ch0_voltage,fmax_hz=fmax_hz) if ch0_voltage.size > 0 else self._empty_result()
 
         print(f"\n🔍 Analyzing Channel 1")
-        result_ch1 = self.analyze(ch1_voltage) if ch1_voltage.size > 0 else self._empty_result()
+        result_ch1 = self.analyze(ch1_voltage,fmax_hz=fmax_hz) if ch1_voltage.size > 0 else self._empty_result()
 
         return result_ch0, result_ch1
 

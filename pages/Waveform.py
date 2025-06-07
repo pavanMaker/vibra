@@ -21,6 +21,7 @@ class WaveformPage(QWidget):
         # self.daq.auto_detect_channel()
         self.selected_quantity = "Acceleration"
         self.selected_fmax_hz = 500
+        self.selected_fmin_hz = 1
         self.top_channel = 0
         self.bottom_channel = 1
 
@@ -38,6 +39,7 @@ class WaveformPage(QWidget):
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
 
+        # Top Navigation Bar
         nav_bar = QHBoxLayout()
         title_label = QLabel("Waveform & Spectrum")
         title_label.setStyleSheet("font-size: 1.5rem; font-weight: bold;")
@@ -50,12 +52,13 @@ class WaveformPage(QWidget):
         nav_bar.addWidget(self.time_label)
         self.main_layout.addLayout(nav_bar)
 
+        # Views
         self.stacked_views = QStackedWidget()
         self.default_view = self.build_readings_waveform_view()
         self.dual_view = self.build_waveform_spectrum_view()
         self.dual_waveform_view = self.build_waveform_waveform_view()
-        self.dual_spectrum_view =  self.build_spectrum_spectrum_view()
-        self.readings_view  = self.build_reading_reading_view()
+        self.dual_spectrum_view = self.build_spectrum_spectrum_view()
+        self.readings_view = self.build_reading_reading_view()
 
         self.stacked_views.addWidget(self.default_view)
         self.stacked_views.addWidget(self.dual_view)
@@ -64,23 +67,18 @@ class WaveformPage(QWidget):
         self.stacked_views.addWidget(self.readings_view)
         self.main_layout.addWidget(self.stacked_views)
 
+        # Bottom Button Bar
         bottom_buttons = QHBoxLayout()
+        bottom_buttons.setSpacing(10)
+        bottom_buttons.setContentsMargins(10, 10, 10, 10)
+
         for label in ["Traces", "Param", "Control", "Auto", "Cursor"]:
             if label == "Traces":
                 self.traces_button = QPushButton(label)
-                self.traces_menu = QMenu()
-                self.traces_menu.addAction("Readings + Waveform", lambda: self.switch_trace_mode(0))
-                self.traces_menu.addAction("Waveform + Spectrum", lambda: self.switch_trace_mode(1))
-                self.traces_menu.addAction("Waveform + Waveform", lambda: self.switch_trace_mode(2))
-                self.traces_menu.addAction("Spectrum + spectrum", lambda: self.switch_trace_mode(3))
-                self.traces_menu.addAction("Readings + Readings", lambda: self.switch_trace_mode(4))
-                self.traces_menu.addSeparator()
-                self.traces_menu.addAction("Trace Window Settings",self.open_trace_window_settings)
-                self.traces_button.setMenu(self.traces_menu)
-                bottom_buttons.addWidget(self.traces_button)
-            elif label == "Param":
-                self.params_button = QPushButton("Param")
-                self.params_button.setStyleSheet("""
+                self.traces_button.setMinimumHeight(40)
+                self.traces_button.setMinimumWidth(100)
+                self.traces_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                self.traces_button.setStyleSheet("""
                     background-color: #17a2b8;
                     color: white;
                     font-weight: bold;
@@ -88,7 +86,60 @@ class WaveformPage(QWidget):
                     padding: 8px;
                     border-radius: 8px;
                 """)
+                self.traces_menu = QMenu()
+                self.traces_menu.setStyleSheet("""
+                    QMenu {
+                        font-size: 1rem;
+                        padding: 10px;
+                        background-color: #f0f0f0;
+                    }
+                    QMenu::item {
+                        padding: 10px 20px;
+                        margin: 5px 0;
+                    }
+                    QMenu::item:selected {
+                        background-color: #17a2b8;
+                        color: white;
+                    }
+                """)
+                self.traces_menu.addAction("Readings + Waveform", lambda: self.switch_trace_mode(0))
+                self.traces_menu.addAction("Waveform + Spectrum", lambda: self.switch_trace_mode(1))
+                self.traces_menu.addAction("Waveform + Waveform", lambda: self.switch_trace_mode(2))
+                self.traces_menu.addAction("Spectrum + spectrum", lambda: self.switch_trace_mode(3))
+                self.traces_menu.addAction("Readings + Readings", lambda: self.switch_trace_mode(4))
+                self.traces_menu.addSeparator()
+                self.traces_menu.addAction("Trace Window Settings", self.open_trace_window_settings)
+                self.traces_button.setMenu(self.traces_menu)
+                bottom_buttons.addWidget(self.traces_button)
+            elif label == "Param":
+                self.params_button = QPushButton("Param")
+                self.params_button.setMinimumHeight(40)
+                self.params_button.setMinimumWidth(100)
+                self.params_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                self.params_button.setStyleSheet("""
+                    background-color: #17a2b8;
+                    color: black;
+                    font-weight: bold;
+                    font-size: 1rem;
+                    padding: 8px;
+                    border-radius: 8px;
+                """)
                 self.params_Menu = QMenu(self.params_button)
+                self.params_Menu.setStyleSheet("""
+                    QMenu {
+                        font-size: 1rem;
+                        padding: 10px;
+                        background-color: #f8f9fa;
+                    }
+                    QMenu::item {
+                        padding: 10px 20px;
+                        margin: 5px 0;
+                    }
+                    QMenu::item:selected {
+                        background-color: #17a2b8;
+                        color: white;
+                    }
+                """)
                 self.params_Menu.addAction("Analysis Parameters", self.analysis_parameter)
                 self.params_Menu.addAction("Input channels", lambda: self.on_param_selected("Input Channels"))
                 self.params_Menu.addAction("Output channels", lambda: self.on_param_selected("Output Channels"))
@@ -99,22 +150,41 @@ class WaveformPage(QWidget):
                 bottom_buttons.addWidget(self.params_button)
             else:
                 btn = QPushButton(label)
-                btn.setStyleSheet("background-color: #17a2b8; color: white; font-weight: bold;")
+                btn.setMinimumHeight(40)
+                btn.setMinimumWidth(100)
+                btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                btn.setStyleSheet("""
+                    background-color: #17a2b8;
+                    color: white;
+                    font-weight: bold;
+                    font-size: 1rem;
+                    padding: 8px;
+                    border-radius: 8px;
+                """)
                 bottom_buttons.addWidget(btn)
 
-        # Start Meas. and Stop Meas. buttons
+        # Start Meas. button
         self.start_button = QPushButton("Start Meas.")
-        self.start_button.setStyleSheet("background-color: green; color: white; font-weight: bold;")
+        self.start_button.setMinimumHeight(40)
+        self.start_button.setMinimumWidth(100)
+        self.start_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.start_button.setStyleSheet("background-color: green; color: white; font-weight: bold; font-size: 1rem;")
         self.start_button.clicked.connect(self.start_measurement)
         bottom_buttons.addWidget(self.start_button)
 
+        # Stop Meas. button
         self.stop_button = QPushButton("Stop Meas.")
-        self.stop_button.setStyleSheet("background-color: red; color: white; font-weight: bold;")
+        self.stop_button.setMinimumHeight(40)
+        self.stop_button.setMinimumWidth(100)
+        self.stop_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.stop_button.setStyleSheet("background-color: red; color: white; font-weight: bold; font-size: 1rem;")
         self.stop_button.clicked.connect(self.stop_measurement)
         self.stop_button.setVisible(False)
         bottom_buttons.addWidget(self.stop_button)
 
         self.main_layout.addLayout(bottom_buttons)
+        self.setLayout(self.main_layout)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def on_param_selected(self, option):
         pass
@@ -339,7 +409,7 @@ class WaveformPage(QWidget):
         print("Measurement stopped.")
 
     def update_plot(self):
-        results = self.daq.get_latest_waveform(fmax_hz = self.selected_fmax_hz)  # list of 2 dicts
+        results = self.daq.get_latest_waveform(fmax_hz = self.selected_fmax_hz,fmin_hz=self.selected_fmin_hz)  # list of 2 dicts
         if not results or len(results) != 2:
             return
 
@@ -422,7 +492,7 @@ class WaveformPage(QWidget):
 
             self.ax_bottom.clear()
             self.ax_bottom.plot(self.freqs, self.fft_mags_top)
-            self.ax_bottom.set_xlim(0, self.selected_fmax_hz)
+            self.ax_bottom.set_xlim(self.selected_fmin_hz, self.selected_fmax_hz)
 
             self.ax_bottom.set_title("Spectrum CH1")
             self.ax_bottom.set_xlabel("Frequency (Hz)")
@@ -454,7 +524,7 @@ class WaveformPage(QWidget):
             self.ax_fft1.clear()
             self.ax_fft1.plot(self.freqs,self.fft_mags_top)
             self.ax_fft1.set_title("Spectrum 1")
-            self.ax_fft1.set_xlim(0, self.selected_fmax_hz)
+            self.ax_fft1.set_xlim(self.selected_fmin_hz, self.selected_fmax_hz)
 
             self.ax_fft1.set_xlabel("Frequency (Hz)")
             self.ax_fft1.set_ylabel("Magnitude")
@@ -463,7 +533,7 @@ class WaveformPage(QWidget):
 
             self.ax_fft2.clear()
             self.ax_fft2.plot(self.freqs,self.fft_mags_bottom)
-            self.ax_fft2.set_xlim(0, self.selected_fmax_hz)
+            self.ax_fft2.set_xlim(self.selected_fmin_hz, self.selected_fmax_hz)
 
             self.ax_fft2.set_title("Spectrum 2 ")
             self.ax_fft2.set_xlabel("Frequency (Hz)")

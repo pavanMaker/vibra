@@ -29,4 +29,4 @@ def run_flask_background():
     server = make_server("127.0.0.1", 8000, app)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    print(f" Flask settings server started on port 8000 → {DATA_FILE}")
+    print(f" Flask settings server started on port 8000 ? {DATA_FILE}")

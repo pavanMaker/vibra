@@ -99,6 +99,12 @@ class WaveformPage(QWidget):
             run_flask_background()
         except Exception as e:
             print(f"flask server failed to start:{e}")
+
+        for _ in range(5):
+            try:
+                break
+            except Exception:
+                time.sleep(0.05)
         
         #saving the settings into the backend json
         stored =  load_settings()
@@ -111,11 +117,10 @@ class WaveformPage(QWidget):
         self.trace_mode_default = stored.get("trace_mode_index", 0)
         self.input_channels_data = stored.get("input_channels", None)
         # self.buffer_size = stored.get("No_of_samples","65536")
-        raw_buffer = stored.get("No_of_samples", 65536)
-        self.buffer_size = raw_buffer 
+       
 
         print("selected fmax:",self.selected_fmax_hz)
-        self.daq = Mcc172Backend(board_num=0, channel=[0,1], sample_rate=11200,buffer_size = self.buffer_size)
+        self.daq = Mcc172Backend()
         self.daq.setup()
       
         self.zoom_enabled = False
@@ -408,7 +413,7 @@ class WaveformPage(QWidget):
             print("⚠️ Using default sensitivity: 0.1 V/g for Bottom Channel")
             bot_sens = 0.1  # Default value in V/g
 
-        print(f"✅ Retrieved Sensitivities → Top: {top_sens} V/g, Bottom: {bot_sens} V/g")
+        
         return top_sens, bot_sens
  
     
@@ -1373,10 +1378,10 @@ class WaveformPage(QWidget):
         def _scaled_metrics(res):
 
             return {
-                "acc": res["acceleration_peak"] *
+                "acc": res["acceleration"] *
                     self._spec_factor("peak", acc_spec) *
                     self._UNIT_FACTOR["Acceleration"][acc_unit],
-                "vel": res["velocity_rms"] *
+                "vel": res["velocity"] *
                     self._spec_factor("rms", vel_spec) *
                     self._UNIT_FACTOR["Velocity"][vel_unit],
                 "disp": res["displacement_ptps"] *
@@ -1475,7 +1480,7 @@ class WaveformPage(QWidget):
         elif view == 3:                 # Spectrum + Spectrum
             self.pg_spectrum_top.clear()
             self.pg_spectrum_top.plot(self.freqs, mag_top, pen='b')
-            self.pg_spectrum_top.setXRange(self.selected_fmin_hz, self.selected_fmax_hz)
+            #self.pg_spectrum_top.setXRange(self.selected_fmin_hz, self.selected_fmax_hz)
             self.pg_spectrum_top.setLabel('left', y_label_spec)
             self.attach_focus_value_overlay(self.pg_spectrum_top, self.freqs, mag_top, "Hz", y_label_spec, True)
 

@@ -84,22 +84,64 @@ class AnalysisParameter(QDialog):
         self.restore_previous_settings()
     def restore_previous_settings(self):
         parent = self.parent()
-        def safe_set_combo(combo, value):
+        def safe_set_combo(combo: QComboBox, value):
+            if value is None:
+                combo.setCurrentIndex(0)
+                return
+            
             idx = combo.findText(str(value), Qt.MatchFlag.MatchFixedString)
             if idx != -1:
                 combo.setCurrentIndex(idx)
             else:
-                combo.setCurrentIndex(0)
+                try:
+                    fv = float(value)
+
+                    found = False
+                    for i in range(combo.count()):
+                        item = combo.itemText(i).lower()
+
+                        digits = ''.join(c for c in item if c.isdigit() or c == '.')
+                        if not digits:
+                            continue
+                        v = float(digits)
+                        if "khz" in item:
+                            v *= 1000.0
+                        if abs(v - fv) < 1e-6 or abs(v - fv) / max(1.0, fv) < 1e-6:
+                            combo.setCurrentIndex(i)
+                            found =  True
+                            break
+                        if not found:
+                            combo.setCurrentIndex(0)
+                except Exception:
+                    combo.setCurrentIndex(0)
+
+
+ 
 
         # 1. Measurement Quantity
         safe_set_combo(self.combo_measurement, getattr(parent, 'selected_quantity', "Acceleration"))
+
+        fmax_val = getattr(parent, 'selected_fmax_hz', None)
+        if fmax_val is not None:
+            safe_set_combo(self.combo_Fmax, fmax_val)
         # 2. Fmax: you can add a robust Fmax restore if needed
         # 3. Fmin
-        if hasattr(parent, 'selected_fmin_hz'):
-            self.fmin_input.setText(str(parent.selected_fmin_hz))
+        if hasattr(parent, 'selected_fmin_hz') and parent.selected_fmin_hz is not None:
+            try:
+                self.fmin_input.setText(str(float(parent.selected_fmin_hz)))
+            except Exception:
+                self.fmin_input.setText(str(parent.selected_fmin_hz))
+            
         # 4. Number of Samples/Lines
-        buffer_size = getattr(parent, 'buffer_size', 65536)
-        buffer_size_str = str(buffer_size)
+        buffer_size = getattr(parent, 'buffer_size', None)
+        if buffer_size is None:
+            buffer_size = getattr(getattr(parent, 'daq', None), 'buffer_size', None)
+        if buffer_size is None:
+            buffer_size = 4096
+
+        buffer_size_str = str(int(buffer_size))
+        
+
         found = False
         for i in range(self.combo_No_of_Samples.count()):
             left = self.combo_No_of_Samples.itemText(i).split("/")[0].strip()
@@ -167,8 +209,10 @@ class AnalysisParameter(QDialog):
         popup.exec()
 
     def apply_settings(self):
-        self.parent().selected_quantity = self.combo_measurement.currentText()
+        parent = self.parent()
+        parent.selected_quantity = self.combo_measurement.currentText()
         fmax_text = self.combo_Fmax.currentText().strip().lower()
+        fmax_hz = None
         try:
             if 'khz' in fmax_text:
                 clean_value = ''.join(c for c in fmax_text if c.isdigit() or c == '.')
@@ -178,43 +222,57 @@ class AnalysisParameter(QDialog):
                 fmax_hz = float(clean_value)
             else:
                 fmax_hz = float(fmax_text)
-            self.parent().selected_fmax_hz = fmax_hz
-            print("✅ Fmax set to:", fmax_hz, "Hz")
-        except ValueError:
+            parent.selected_fmax_hz = fmax_hz
+            print("✅ Fmax set to:", parent.selected_fmax_hz, "Hz")
+        except Exception:
             print(f"❌ Invalid Fmax format: {fmax_text}")
-            self.parent().selected_fmax_hz = 500.0  # fallback
+            parent.selected_fmax_hz = 500.0  # fallback
+
+        fmin_txt = self.fmin_input.text().strip()
+        if fmin_txt:
+            try:
+                parent.selected_fmin_hz = float(fmin_txt)
+            except Exception:
+                print("❌ Invalid Fmin format:")
 
 
         selected_samples_text = self.combo_No_of_Samples.currentText()
         try:
             selected_samples = int(selected_samples_text.split("/")[0])
-            self.parent().buffer_size = selected_samples
+            parent.buffer_size = selected_samples
+            if getattr(parent, 'daq', None) is None:
+                parent.daq.buffer_size = selected_samples
+
+                try:
+                    parentdaq.setup()
+                except Exception as e:
+                    print("❌ Error setting up DAQ:", e)
+                
             
-            self.parent().daq.buffer_size = selected_samples 
-            self.parent().daq.setup()
+            
+            print("✅ Number of Samples set to:", selected_samples)
+        except Exception:
+            print(f"❌ Error setting buffer size on DAQ backend.",selected_samples)
+            parent.buffer_size = getattr(parent,"buffer_size",8192)
 
-            print(f"Sample rate set to: {self.parent().daq.sample_rate}Hz")
-            print(f"Buffer size set to: {selected_samples}")
-
-        except ValueError:
-            print(f"❌ Invalid sample format: {selected_samples_text}")
-            self.parent().buffer_size = 8192
-            self.parent().backend.buffer_size = 8192  # fallback value
+         # fallback value
 
             
 
-        save_settings({
-            "selected_quantity": self.parent().selected_quantity,
-            "selected_fmax_hz": self.parent().selected_fmax_hz,
-            "selected_fmin_hz": self.parent().selected_fmin_hz,
-            "top_channel": self.parent().top_channel,
-            "bottom_channel": self.parent().bottom_channel,
-            "trace_mode_index": self.parent().stacked_views.currentIndex(),
-            "display_settings": self.parent().display_settings,
-            "No_of_samples" :  self.parent().buffer_size
-        })
+        to_save = {
+            "selected_quantity": parent.selected_quantity,
+            "selected_fmax_hz":  (parent.selected_fmax_hz),
+            "selected_fmin_hz":  float(getattr(parent, "selected_fmin_hz", 1.0)),
+            "top_channel": int(getattr(parent, "top_channel", 0)),
+            "bottom_channel": int(getattr(parent, "bottom_channel", 1)),
+            "trace_mode_index": int(getattr(parent, "stacked_views", None).currentIndex() if getattr(parent, "stacked_views", None) else 0),
+            "display_settings": getattr(parent, "display_settings", {}),
+            "buffer_size": int(getattr(parent, "buffer_size", 4096)),
+            "input_channels": getattr(parent, "input_channels", None).data if getattr(parent, "input_channels", None) else None
+        }
+        save_settings(to_save)
 
-        self.close()
+        self.accept()
 
 
 

@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QDialog, QComboBox,
     QSizePolicy, QMenu, QStackedWidget, QListWidget
 )
+from PyQt6 import QtGui
 from PyQt6.QtCore import Qt, QTimer, QDateTime
 from backend.mcc_backend import Mcc172Backend
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -116,11 +117,11 @@ class WaveformPage(QWidget):
         self.bottom_channel     = stored.get("bottom_channel", 1)
         self.trace_mode_default = stored.get("trace_mode_index", 0)
         self.input_channels_data = stored.get("input_channels", None)
-        # self.buffer_size = stored.get("No_of_samples","65536")
+        self.buffer_size = stored.get("buffer_size", 8192)
        
 
         print("selected fmax:",self.selected_fmax_hz)
-        self.daq = Mcc172Backend()
+        self.daq = Mcc172Backend(buffer_size = self.buffer_size)
         self.daq.setup()
       
         self.zoom_enabled = False
@@ -131,7 +132,8 @@ class WaveformPage(QWidget):
         self.input_channels_dialog = InputChannelsDialog()
         if self.input_channels_data:
             self.input_channels_dialog.data = self.input_channels_data
-
+        
+        self.setup_ui()
 
         top_sens, bot_sens = self.get_selected_channel_sensitivities()
         self.top_sens = top_sens
@@ -148,7 +150,7 @@ class WaveformPage(QWidget):
         self.tach = TachometerReader()
         self.tach.rpm_updated.connect(self.update_rpm_display)
 
-        self.setup_ui()
+        
         self.grabGesture(Qt.GestureType.PinchGesture)
 
         self.start_clock()
@@ -464,42 +466,87 @@ class WaveformPage(QWidget):
 
 
     def attach_focus_value_overlay(
-        self, plot_widget,
-        x_array, y_array,
-        x_unit="s", y_unit="g",
-        snap_to_peak=False, win=5):
-   
-        text_item = pg.TextItem("", anchor=(0.5, 1.5),
-                                fill=(255, 255, 200, 180), color='k')
+            self, plot_widget,
+            x_array, y_array,
+            x_unit="s", y_unit="g",
+            snap_to_peak=False, win=5):
+
+        text_item = pg.TextItem(
+            "",
+            anchor=(0, 1),               # small, compact anchor
+            fill=(255, 255, 200, 200),
+            color='k',
+            border='k'
+        )
+        text_item.setFont(QtGui.QFont("Arial", 8))
         plot_widget.addItem(text_item)
         text_item.hide()
 
-        # ensure we do not create many duplicate connections
+        # avoid duplicate connections
         try:
             plot_widget.scene().sigMouseClicked.disconnect(self._tap_cb)
-        except Exception:
+        except:
             pass
 
         def _tap_cb(event):
+            # IMPORTANT: this makes touch events work
+            if not event.buttons():      # finger tap has no mouse buttons
+                pass                     # allow tap
             if not len(x_array):
                 return
-            pos = event.scenePos()
-            x_clicked = plot_widget.getPlotItem().vb.mapSceneToView(pos).x()
 
-            idx = int(np.argmin(np.abs(x_array - x_clicked)))          # nearest bin
+            # convert tap → x-value
+            pos = event.scenePos()
+            plot = plot_widget.getPlotItem()
+            x_clicked = plot.vb.mapSceneToView(pos).x()
+
+            # find nearest point
+            idx = int(np.argmin(np.abs(x_array - x_clicked)))
+
+            # snap to local peak if needed
             if snap_to_peak:
                 start = max(0, idx - win)
                 end   = min(len(y_array) - 1, idx + win)
-                idx   = start + int(np.argmax(y_array[start:end + 1])) # local peak
+                idx   = start + int(np.argmax(y_array[start:end + 1]))
 
             x_val = x_array[idx]
             y_val = y_array[idx]
-            text_item.setText(f"x: {x_val:.3f} {x_unit},  y: {y_val:.3f} {y_unit}")
-            text_item.setPos(x_val, y_val)
+
+            text_item.setText(f"{x_val:.3f} {x_unit}, {y_val:.3f} {y_unit}")
+
+            # --------- KEEP LABEL INSIDE ---------
+            vb = plot.vb
+            view = vb.viewRect()
+
+            xmin, xmax = view.left(), view.right()
+            ymin, ymax = view.bottom(), view.top()
+
+            tx, ty = x_val, y_val
+
+            # margins
+            dx = (xmax - xmin) * 0.04
+            dy = (ymax - ymin) * 0.04
+
+            # left edge
+            if tx < xmin + dx:
+                tx = xmin + dx
+            # right edge
+            if tx > xmax - dx:
+                tx = xmax - dx
+            # bottom edge
+            if ty < ymin + dy:
+                ty = ymin + dy
+            # top edge
+            if ty > ymax - dy:
+                ty = ymax - dy
+
+            text_item.setPos(tx, ty)
+            # -------------------------------------
+
             text_item.show()
             QTimer.singleShot(2000, text_item.hide)
 
-        self._tap_cb = _tap_cb          # keep a reference
+        self._tap_cb = _tap_cb
         plot_widget.scene().sigMouseClicked.connect(self._tap_cb)
 
     def toggle_recording(self):
@@ -965,6 +1012,17 @@ class WaveformPage(QWidget):
         def apply_selection():
             self.top_channel = combo_top.currentIndex()
             self.bottom_channel = combo_bottom.currentIndex()
+
+            save_settings({
+                "selected_quantity": self.selected_quantity,
+                "selected_fmax_hz": self.selected_fmax_hz,
+                "selected_fmin_hz": self.selected_fmin_hz,
+                "top_channel": self.top_channel,
+                "bottom_channel": self.bottom_channel,
+                "trace_mode_index": self.stacked_views.currentIndex(),
+                "display_settings": self.display_settings,
+                "input_channels": self.input_channels_dialog.data
+            })
             dialog.accept()
 
         buttons.accepted.connect(apply_selection)

@@ -240,13 +240,14 @@ class AnalysisParameter(QDialog):
         try:
             selected_samples = int(selected_samples_text.split("/")[0])
             parent.buffer_size = selected_samples
-            if getattr(parent, 'daq', None) is None:
-                parent.daq.buffer_size = selected_samples
-
+            daq = getattr(parent, 'daq', None)
+            if daq is not None:
+                daq.buffer_size = selected_samples
                 try:
-                    parentdaq.setup()
+                    daq.setup()
                 except Exception as e:
-                    print("❌ Error setting up DAQ:", e)
+                    print("? Error setting up DAQ:", e)
+
                 
             
             

@@ -29,7 +29,8 @@ class DashboardPage(QWidget):
             "Waveform and Spectrum",
             "Demodulation Spectrum",
             "Bump Test",
-            "CoastDown/Run Up"
+            "CoastDown/Run Up",
+            "Rotor Balancing"
         ]
 
         for idx, text in enumerate(button_texts):
@@ -51,4 +52,6 @@ class DashboardPage(QWidget):
 
     def handle_button_click(self, index: int) -> None:
         if index == 0:
-            self.main_window.stacked_widget.setCurrentIndex(1)  # Switch to WaveformPage
+            self.main_window.stacked_widget.setCurrentIndex(1)
+        if index == 4:
+            self.main_window.stacked_widget.setCurrentIndex(5)  # Switch to Rotor Balancing Page

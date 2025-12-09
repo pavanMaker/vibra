@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from daqhats import mcc172, OptionFlags, SourceType
 from scipy.fft import fft, fftfreq,ifft,rfft,rfftfreq,irfft
-from scipy.signal import detrend, windows, sosfiltfilt, butter
+from scipy.signal import detrend, windows, sosfiltfilt, butter,find_peaks
 from scipy.signal import firwin, filtfilt
 from endaq.calc.integrate import integrals
 from endaq.calc.filters import butterworth
@@ -13,7 +13,7 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 
 
 class Mcc172Backend:
-    def __init__(self, board_num=0, sample_rate=5000,  channel=[0, 1],buffer_size =8192):
+    def __init__(self, board_num=0, sample_rate=5000,  channel=[0, 1],buffer_size = None ):
         self.board_num = board_num
         self.sample_rate = sample_rate
         print("Sample rate:", self.sample_rate)
@@ -80,140 +80,198 @@ class Mcc172Backend:
         print("❌ No valid data received.")
         return np.zeros(0), np.zeros(0)
 
-    def analyze(self, data, sensitivity, fmax_hz, fmin_hz):
-        if data is None or len(data) < self.buffer_size:
-            return self._empty_result()
+    def analyze(self, result_data, sensitivity, fmax_hz=25000, fmin_hz=1):
+        calibiration_fac = 1.0
         
-        print(f"raw data length: {len(data)} samples and sensitivity: {sensitivity} V/g")
+        g_to_m_s2 = 9.80665
 
-        fs = self.actual_rate
-        print(f"type of data: {type(data)} and Actual Sample Rate: {fs} Hz")
-        dt = 1.0 / fs
-        N = len(data)
-        time = np.linspace(0, (N - 1) * dt, N)
+        # ───────────── ACCELERATION ─────────────
+        acceleration_g = result_data / (sensitivity * calibiration_fac)
+        acceleration_waveform = detrend(acceleration_g, type='linear')
 
-    
-        acc_g = data / float(sensitivity)
-
-    
-        acc_g = acc_g - np.mean(acc_g)
-
-    
-        # numtaps = 513
-        # fir_bp = firwin(
-        #     numtaps,
-        #     [fmin_hz, fmax_hz],
-        #     fs=fs,
-        #     pass_zero=False,
-        #     window="hann"
-        # )
-        acc_bp = filtfilt(fir_bp, 1.0, acc_g)
-        print(f"Applied FIR bandpass filter: {fmin_hz} Hz to {fmax_hz} Hz")
-        print(f" mean after filtering: {np.mean(acc_bp):.6f} g")
-
+        N = len(acceleration_g)
+        block_size = 1 / self.actual_rate
         window = windows.hann(N)
-        acc_win = acc_bp * window
-        acc_fft = rfft(acc_win)
-        acc_mag = np.abs(acc_fft) * (4.0 / N)
-        freqs = rfftfreq(N, dt)
+        accel_win = acceleration_waveform * window
 
-        # DIAGNOSTIC: Print max amplitude with frequency for acceleration
-        acc_max_idx = int(np.argmax(acc_mag))
-        print(f"🎯 ACCELERATION - Dominant Frequency: {freqs[acc_max_idx]:.2f} Hz, Max Amplitude: {acc_mag[acc_max_idx]:.6f} g")
 
-    
-        acc_ms2 = acc_bp * 9.80665
+        windowing_correction = 2.0 / np.sum(window)
+        frequencies = rfftfreq(N, block_size)
+        print("frequencies:",type(frequencies))
+        #acceleration_magnitudes = rfft(accel_win) * windowing_correction
+        acceleration_magnitudes = rfft(accel_win)
+        # === Frequency Domain RMS Calculation (Parseval's Theorem) ===
+        U = np.mean(window ** 2)
+        N = len(accel_win)
+        fft_result = rfft(accel_win)
+        power_spectrum = np.abs(fft_result) ** 2
 
-        vel_raw = np.zeros_like(acc_mag)
-        for i in range(1, N):
-            vel_raw[i] = vel_raw[i-1] + 0.5 * (acc_ms2[i-1] + acc_ms2[i]) * dt
+        # For rfft, double all bins except DC and Nyquist
+        if N % 2 == 0:
+            power_spectrum[1:-1] *= 2
+        else:
+            power_spectrum[1:] *= 2
 
-    
-        vel_raw = detrend(vel_raw, type="linear")
+        # Frequencies array, same as used elsewhere in your code
+        freqs = rfftfreq(N, block_size)
 
-        # Applying Same fir bp on velocity
-        vel_bp = filtfilt(fir_bp, 1.0, vel_raw)
+        # Band-limited mask based on user-selected fmin_hz and fmax_hz
+        band = (freqs >= fmin_hz) & (freqs <= fmax_hz)
 
-        vel_mm = vel_bp * 1000.0  # m/s → mm/s
+        # Band-limited power
+        band_power = power_spectrum[band]
 
-        # -------------------------------------------------------
-        # 6) VELOCITY FFT
-        # -------------------------------------------------------
-        vel_win = vel_mm * window
-        vel_fft = rfft(vel_win)
-        vel_mag = np.abs(vel_fft) * (4.0 / N)
+        # Band-limited RMS calculation (Parseval's theorem, window-corrected)
+        rms_fft_acc_band = np.sqrt(np.sum(band_power) / (N ** 2 * U))
+        print(f"acceleration_rms (FFT, {fmin_hz} Hz to {fmax_hz} Hz):", rms_fft_acc_band)
+
+
+        rms_fft_acc = np.sqrt(np.sum(power_spectrum) / (N ** 2 * U))
+        print("acceleration_rms from frequency domain (FFT):", rms_fft_acc)
+
+
+        fft_mags = windowing_correction * np.abs(acceleration_magnitudes)
+
+        # Bandpass filter the acceleration data
+        bandpass_freq = (frequencies >= fmin_hz) & (frequencies <= fmax_hz)
+        acceleration_magnitudes_filtered = acceleration_magnitudes * bandpass_freq
+        #acceleration_magnitudes_filtered =  fft_mags * bandpass_freq
+        fft_mags = np.abs(acceleration_magnitudes_filtered) * windowing_correction
+
+        # --- Frequency-Domain Band-Limited RMS for Velocity (mm/s) ---
+        U = np.mean(window ** 2)
+        frequencies = rfftfreq(N, block_size)
+        omega = 2 * np.pi * frequencies
+        accel_fft = rfft(accel_win)
+        vel_fft = np.where(omega != 0, accel_fft / (1j * omega), 0.0+0.0j)
+        vel_power_spectrum = np.abs(vel_fft) ** 2
+
+        if N % 2 == 0:
+            vel_power_spectrum[1:-1] *= 2
+        else:
+            vel_power_spectrum[1:] *= 2
+
+        band = (frequencies >= fmin_hz) & (frequencies <= fmax_hz)
+        band_vel_power = vel_power_spectrum[band]
+
+        # RMS in g�s
+        rms_fft_vel_band_gs = np.sqrt(np.sum(band_vel_power) / (N ** 2 * U))
+
+        # Convert g�s to mm/s
+        g_to_m_s2 = 9.80665
+        rms_fft_vel_band = rms_fft_vel_band_gs * g_to_m_s2 * 1000
+
+        print(f"velocity_rms (FFT, {fmin_hz} Hz to {fmax_hz} Hz):", rms_fft_vel_band)
+
+
+        # ───────────── VELOCITY ─────────────
+        omega = 2 * np.pi * frequencies
         
-        # DIAGNOSTIC: Print max amplitude with frequency for velocity
-        vel_max_idx = int(np.argmax(vel_mag))
-        print(f"🎯 VELOCITY - Dominant Frequency: {freqs[vel_max_idx]:.2f} Hz, Max Amplitude: {vel_mag[vel_max_idx]:.6f} mm/s")
-
-
-        # -------------------------------------------------------
-        # 7) VEL → DISP (Second Integration)
-        # -------------------------------------------------------
-        disp_raw = np.zeros_like(vel_mm)
-        for i in range(1, N):
-            disp_raw[i] = disp_raw[i-1] + 0.5 * (vel_mm[i-1] + vel_mm[i]) * dt
-
-        disp_raw = detrend(disp_raw, type="linear")
-
-        # Apply SAME FIR BP on displacement
-        disp_bp = filtfilt(fir_bp, 1.0, disp_raw)
-
-        disp_um = disp_bp * 1000.0  # mm → µm
-
-        # -------------------------------------------------------
-        # 8) DISPLACEMENT FFT
-        # -------------------------------------------------------
-        disp_win = disp_um * window
-        disp_fft = rfft(disp_win)
-        disp_mag = np.abs(disp_fft) * (4.0 / N)
+        vel_fft = np.where(omega != 0 ,acceleration_magnitudes_filtered/ (1j * omega),0.0+0.0j)
+        #vel_fft[~bandpass_freq] = 0
+        vel_fft1= vel_fft * bandpass_freq
+        vel_magnitude =  np.abs(vel_fft) * windowing_correction
+        vel_fft_mags = vel_magnitude * g_to_m_s2 * 1000
         
-        # DIAGNOSTIC: Print max amplitude with frequency for displacement
-        disp_max_idx = int(np.argmax(disp_mag))
-        print(f"🎯 DISPLACEMENT - Dominant Frequency: {freqs[disp_max_idx]:.2f} Hz, Max Amplitude: {disp_mag[disp_max_idx]:.6f} µm")
 
-        # -------------------------------------------------------
-        # 9) METRICS
-        # -------------------------------------------------------
-        acc_rms = float(np.sqrt(np.mean(acc_bp**2)))
-        acc_peak = float(np.max(np.abs(acc_bp)))
+        #vel_fft = np.where(omega != 0, acceleration_magnitudes_filtered / (1j * omega), 0.0)
+        # vel_fft1 = np.where(omega != 0, acceleration_magnitudes_filtered/ (1j * omega), 0.0)
+        # vel_fft = vel_fft1 * g_to_m_s2  # g·s → m/s
+        # velocity_magnitudes = vel_fft * bandpass_freq
+        # vel_fft_mags = np.abs(velocity_magnitudes) * 1000  # mm/s
+        # vel_fft_mags = windowing_correction * np.abs(vel_fft1) * g_to_m_s2 *1000
+        # vel_fft_mags *= bandpass_freq    
 
-        vel_rms = float(np.sqrt(np.mean(vel_mm**2)))
-        vel_peak = float(np.max(np.abs(vel_mm)))
+        vel_time_waveform = irfft(vel_fft) * g_to_m_s2*1000  # mm/s
 
-        disp_pp = float(np.ptp(disp_um))
-        disp_peak = float(np.max(np.abs(disp_um)))
+        # ───────────── DISPLACEMENT ─────────────
+        omega_sq = omega ** 2
+        disp_fft1 = np.where(omega_sq != 0, acceleration_magnitudes / (-omega_sq), 0.0)
+        disp_fft  = windowing_correction * np.abs(disp_fft1)*g_to_m_s2*1000000
 
-        dom_idx = int(np.argmax(vel_mag))
-        dom_freq = float(freqs[dom_idx])
+        #disp_fft = disp_fft * g_to_m_s2  # g·s² → m
 
-        # -------------------------------------------------------
-        # 10) RETURN RESULT
-        # -------------------------------------------------------
+        accel_peak = np.max(np.abs(acceleration_magnitudes_filtered))
+        threshold = 0.05 * accel_peak
+        disp_mask = np.abs(acceleration_magnitudes_filtered) > threshold
+        disp_fft_masked = disp_fft * disp_mask * bandpass_freq
+        disp_mags = np.abs(disp_fft_masked) * 1_000_000  # µm
+
+        disp_time_waveform = irfft(disp_fft1) * 1_000_000  # µm
+
+        # ───────────── METRICS (Using endaq.stats.rms) ─────────────
+     
+    
+
+
+        peak_indices , _ = find_peaks(fft_mags,height=0.05* np.max(fft_mags))
+        a = fft_mags[peak_indices]
+        acceleration_peak_reading = np.sum(a)
+        print("acceleration overall peak for fft",acceleration_peak_reading)
+
+        acceleration_peak_rms = a/np.sqrt(2)
+        overall_rms_peak = np.sum(acceleration_peak_rms)
+        print("aceleration overall rms for fft",overall_rms_peak)
+        acceleration_peak_rms_2 = acceleration_peak_reading/np.sqrt(2)
+        print("acceleration overall rms for fft 2",acceleration_peak_rms_2)
+        
+        peak_indices_vel,_ = find_peaks(vel_fft_mags, height= 0.05 * np.max(vel_fft_mags))
+        v =  vel_fft_mags[peak_indices_vel]
+        vel_peak = np.sum(v)
+        print("velocity overall peak for fft",vel_peak)
+        vel_peak_rms = v / np.sqrt(2)
+        vel_peak_reading = np.sum(vel_peak_rms)
+        print("velocity overall rms for fft",vel_peak_reading)
+        # peak_threshold = fft_mags > threshold
+        # acceleration_peak_reading = np.sum(fft_mags[peak_threshold])
+
+        # vel_peak = np.max(np.abs(vel_fft_mags))
+        # peak_threshold1 = vel_fft_mags > (0.05 * vel_peak)
+        # vel_peak_reading = np.sum(vel_fft_mags[peak_threshold1])
+
+        disp_peak = np.max(np.abs(disp_mags))
+        # peak_threshold2 = disp_mags > (0.05 * disp_peak)
+        # disp_peak_reading = np.sum(disp_mags[peak_threshold2])
+
+        # displacement_ptp = np.ptp(np.max(disp_mags))  # unnecessary, but kept as-is
+        displacement_peak_to = 2 * disp_peak
+
+        dominant_freq = frequencies[np.argmax(fft_mags)]
+        peak_freqs = frequencies[peak_indices]
+        
+        # Extract top frequencies
+        if len(a) >= 4:
+            top_idx = np.argsort(a)[-4:][::-1]  # descending order
+        else:
+            top_idx = np.argsort(a)[::-1]       # less than 4 peaks
+
+        # Get top 4 frequencies as list
+        top_frequencies = [peak_freqs[i] for i in top_idx]
+        print("\nTop 4 FFT Peaks (Frequency, Amplitude):")
+        for i in top_idx:
+            print(f"  {peak_freqs[i]:.2f} Hz,  {a[i]:.4f}")
+
         return {
-            "time": time,
-
-            "acceleration": acc_bp,
-            "velocity": vel_mm,
-            "displacement": disp_um,
-
-            "frequencies": freqs,
-            "fft_mags": acc_mag,
-            "fft_mags_vel": vel_mag,
-            "fft_mags_disp": disp_mag,
-
-            "acc_peak": acc_peak,
-            "acc_rms": acc_rms,
-
-            "vel_peak": vel_peak,
-            "velocity_rms": vel_rms,
-
-            "disp_peak": disp_peak,
-            "displacement_ptps": disp_pp,
-
-            "dom_freq": dom_freq,
+            "acceleration": acceleration_waveform,
+            "velocity": vel_time_waveform,
+            "displacement": disp_time_waveform,
+            "time": np.linspace(0, N * block_size, N, endpoint=False),
+            "fft_mags": fft_mags,
+            "fft_mags_vel": vel_fft_mags,
+            "fft_mags_disp": disp_mags,
+            "frequencies": frequencies,
+            "acceleration_rms": overall_rms_peak,
+            "velocity_rms": vel_peak_reading,
+            #"displacement_rms": displacement_rms,
+            "acceleration_peak": acceleration_peak_reading,
+            "velocity_peak": vel_peak_reading,
+            # "displacement_peak": disp_peak_reading,
+            # "displacement_peak_to_peak": displacement_ptp,
+            "displacement_ptps": displacement_peak_to,
+            "dom_freq": dominant_freq,
+            "top_frequencies": top_frequencies  # NEW: Multiple frequencies
         }
+
 
 
     
@@ -241,7 +299,7 @@ class Mcc172Backend:
             "acc_peak": 0.0,
             "acc_rms": 0.0,
             "vel_rms": 0.0,
-            "disp_pp": 0.0,
+            "disp_ptps": 0.0,
             "dom_freq": 0.0,
             "fft_freqs": np.array([]),
             "fft_mags": np.array([]),

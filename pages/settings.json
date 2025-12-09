@@ -2,7 +2,7 @@
   "selected_quantity": "Velocity",
   "selected_fmax_hz": 1150.0,
   "selected_fmin_hz": 3.0,
-  "top_channel": 1,
+  "top_channel": 0,
   "bottom_channel": 1,
   "trace_mode_index": 3,
   "display_settings": {
@@ -13,6 +13,6 @@
     "Velocity Engineering Unit": "mm/s",
     "Velocity Spectrum Type": "Peak"
   },
-  "buffer_size": 8192,
+  "buffer_size": 1024,
   "input_channels": null
 }

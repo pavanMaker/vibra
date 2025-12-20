@@ -13,7 +13,7 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 
 
 class Mcc172Backend:
-    def __init__(self, board_num=0, sample_rate=5000,  channel=[0, 1],buffer_size = None ):
+    def __init__(self, board_num=0, sample_rate=5000,  channel=[0, 1],buffer_size = 8192 ):
         self.board_num = board_num
         self.sample_rate = sample_rate
         print("Sample rate:", self.sample_rate)
@@ -49,8 +49,8 @@ class Mcc172Backend:
 
         if result and result.data is not None:
             data = np.asarray(result.data) #storing the data of the samples
-            print("🔧 Raw data type:", type(data))
-            print("📏 Raw data shape:", data.shape)
+            print("Raw data type:", type(data))
+            print(" Raw data shape:", data.shape)
 
             ch0_voltage, ch1_voltage = np.zeros(0), np.zeros(0)
 
@@ -80,14 +80,15 @@ class Mcc172Backend:
         print("❌ No valid data received.")
         return np.zeros(0), np.zeros(0)
 
-    def analyze(self, result_data, sensitivity, fmax_hz=25000, fmin_hz=1):
+
+    def analyze(self,result_data,sensitivity,fmax_hz,fmin_hz):
         calibiration_fac = 1.0
         
         g_to_m_s2 = 9.80665
 
         # ───────────── ACCELERATION ─────────────
         acceleration_g = result_data / (sensitivity * calibiration_fac)
-        acceleration_waveform = detrend(acceleration_g, type='linear')
+        acceleration_waveform = acceleration_g - np.mean(acceleration_g)
 
         N = len(acceleration_g)
         block_size = 1 / self.actual_rate
@@ -257,6 +258,7 @@ class Mcc172Backend:
             "displacement": disp_time_waveform,
             "time": np.linspace(0, N * block_size, N, endpoint=False),
             "fft_mags": fft_mags,
+            "fft_complex": accel_fft,
             "fft_mags_vel": vel_fft_mags,
             "fft_mags_disp": disp_mags,
             "frequencies": frequencies,
@@ -273,10 +275,8 @@ class Mcc172Backend:
         }
 
 
-
     
-    
-    def get_latest_waveform(self,fmax_hz,fmin_hz,sensitivities =None):
+    def get_latest_waveform(self, fmax_hz, fmin_hz, sensitivities):
         ch0_voltage, ch1_voltage = self.read_data()
 
         print(f"\n📥 Received sensitivities from GUI → CH0: {sensitivities[0]} V/g, CH1: {sensitivities[1]} V/g")
@@ -301,8 +301,11 @@ class Mcc172Backend:
             "vel_rms": 0.0,
             "disp_ptps": 0.0,
             "dom_freq": 0.0,
+            "displacement_ptps": 0.0,
+            "frequencies": np.array([]),
             "fft_freqs": np.array([]),
             "fft_mags": np.array([]),
+            "fft_complex": np.array([], dtype=complex),
             "freqs_vel": np.array([]),
             "fft_mags_vel": np.array([]),
             "fft_freqs_disp": np.array([]),

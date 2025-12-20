@@ -54,4 +54,4 @@ class DashboardPage(QWidget):
         if index == 0:
             self.main_window.stacked_widget.setCurrentIndex(1)
         if index == 4:
-            self.main_window.stacked_widget.setCurrentIndex(5)  # Switch to Rotor Balancing Page
+            self.main_window.stacked_widget.setCurrentIndex(2)  # Switch to Rotor Balancing Page

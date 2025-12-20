@@ -13,6 +13,6 @@
     "Velocity Engineering Unit": "mm/s",
     "Velocity Spectrum Type": "Peak"
   },
-  "buffer_size": 1024,
+  "buffer_size": 8192,
   "input_channels": null
 }

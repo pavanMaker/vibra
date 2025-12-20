@@ -83,10 +83,6 @@ class WaveformPage(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
-        
-        
-        
-        
         self.recording = False
 
         self.recordings_dir =  "recordings"
@@ -147,8 +143,8 @@ class WaveformPage(QWidget):
         })
       
         self.selected_unit = "g"  # default unit for Acceleratio
-        self.tach = TachometerReader()
-        self.tach.rpm_updated.connect(self.update_rpm_display)
+        # self.tach = TachometerReader()
+        # self.tach.rpm_updated.connect(self.update_rpm_display)
 
         
         self.grabGesture(Qt.GestureType.PinchGesture)
@@ -165,12 +161,21 @@ class WaveformPage(QWidget):
 
         # Top Navigation Bar
         nav_bar = QHBoxLayout()
+        back_btn = QPushButton("⬅")
+        back_btn.setStyleSheet("""
+            background-color : #444;
+            color: white;
+            font-weight: bold;
+            padding: 6px 14px;
+            border-radius: 6px;
+            """)
+        back_btn.clicked.connect(self.go_back_to_dashboard)
         title_label = QLabel("Waveform & Spectrum")
         title_label.setStyleSheet("font-size: 1.5rem; font-weight: bold;")
         title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.time_label = QLabel()
         self.time_label.setStyleSheet("font-weight: bold; font-size: 1rem;")
-
+        nav_bar.addWidget(back_btn)
         nav_bar.addWidget(title_label)
         self.record_btn = QPushButton("Record")
         self.record_btn.setIcon(QIcon("assets/record_start.png"))
@@ -368,6 +373,9 @@ class WaveformPage(QWidget):
         self.setLayout(self.main_layout)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
+    def go_back_to_dashboard(self):
+        self.main_window.stacked_widget.setCurrentIndex(0)
+
     def on_param_selected(self, option):
         pass
 
@@ -558,6 +566,10 @@ class WaveformPage(QWidget):
             self.stop_recording()
             self.record_btn.setIcon(QIcon("assets/record_start.png"))
             self.record_btn.setText("start recording")
+
+    # def update_rpm_display(self, rpm):
+    #     self.rpm_value = rpm
+    #     self.rpm_label.setText(f"{rpm:.1f} RPM") 
 
     def start_recording(self):
     # Ensure measurement is running
@@ -1030,8 +1042,8 @@ class WaveformPage(QWidget):
 
         dialog.exec()
 
-    def update_rpm_display(self, rpm):
-        self.rpm_input["input"].setText(f"{rpm:.0f}")
+    # def update_rpm_display(self, rpm):
+    #     self.rpm_input["input"].setText(f"{rpm:.0f}")
 
 
    
@@ -1045,9 +1057,7 @@ class WaveformPage(QWidget):
     def stop_measurement(self):
         self.daq.stop_scan()
         self.timer.stop()
-        if self.tach:
-            self.tach.cleanup()
-            self.tach = None
+        
         
         #self.is_running = False
         self.start_button.setVisible(True)
@@ -1480,6 +1490,14 @@ class WaveformPage(QWidget):
         # ---- apply unit/spec scaling to waveform & spectrum data ----------
         unit_factor      =self._UNIT_FACTOR[quantity][unit_choice]
         spec_scaler_fft  = self._spec_factor("peak", spec_choice)       # fft mags are PEAK from backend
+        # frequency = self.rpm/60.0
+        # idx = np.argmin(np.abs(top_result["frequencies"] - frequency))
+        # fft_bin = top_result["fft_complex"][idx] if idx < len(top_result["fft_complex"]) else 0.0
+        # amplitude = np.abs(fft_bin) 
+        # phase_deg =  math.degrees(np.angle(fft_bin))
+
+        
+        
 
         y_top = y_top * unit_factor
         y_bot = y_bot * unit_factor

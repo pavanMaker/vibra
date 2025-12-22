@@ -200,14 +200,11 @@ class RotorPage(QWidget):
             self.canvas.is_sampling = False
             self.canvas.update()
 
-    @staticmethod    
+     
+    @staticmethod
     def phase_calculation(raw_voltage,fs,sensitivity_v_per_g,rpm,fmin=3,fmax_hz=1150):
        
-
-        # ------------------------------
-        # Safety checks
-        # ------------------------------
-        if raw_voltage is None or len(raw_voltage) < 100:
+        if raw_voltage is None or len(raw_voltage) < 256:
             return {"phase_deg": 0.0, "phase_rad": 0.0, "acc_amp_pk": 0.0}
 
         if rpm <= 0:
@@ -216,42 +213,59 @@ class RotorPage(QWidget):
         # ------------------------------
         # Convert voltage → acceleration
         # ------------------------------
-        acc_g = detrend(raw_voltage / sensitivity_v_per_g)
-        acc_ms2 = acc_g * 9.80665
+        acc_g = raw_voltage / sensitivity_v_per_g
+        acc_g = detrend(acc_g)                  # remove DC & drift
+        acc_ms2 = acc_g * 9.80665               # g → m/s²
 
         # ------------------------------
-        # Broadband band-pass (as requested)
+        # Band-pass filter (broadband)
         # ------------------------------
         nyq = fs / 2.0
-        fmax = min(fmax_hz, nyq * 0.95)  # protect digital filter
+        fmax = min(fmax_hz, nyq * 0.95)
 
-        b, a = butter(4, [fmin / nyq, fmax / nyq], btype="band")
+        b, a = butter(
+            N=4,
+            Wn=[fmin / nyq, fmax / nyq],
+            btype="band"
+        )
         acc_filt = filtfilt(b, a, acc_ms2)
 
         # ------------------------------
-        # Amplitude → TIME DOMAIN (CORRECT)
-        # ------------------------------
-        acc_amp_pk = 0.5 * (np.max(acc_filt) - np.min(acc_filt))
-
-        # ------------------------------
-        # Phase → FFT @ 1×
+        # 1× frequency
         # ------------------------------
         freq_1x = rpm / 60.0
 
+        # ------------------------------
+        # Windowing (CRITICAL for phase)
+        # ------------------------------
         win = windows.hann(len(acc_filt))
         acc_win = acc_filt * win
 
+        # ------------------------------
+        # FFT
+        # ------------------------------
         fft_acc = np.fft.rfft(acc_win)
-        freqs = np.fft.rfftfreq(len(acc_win), 1.0 / fs)
+        freqs = np.fft.rfftfreq(len(acc_win), d=1.0 / fs)
 
+        # Find closest bin to 1×
         idx = np.argmin(np.abs(freqs - freq_1x))
 
+        # ------------------------------
+        # Phase (CORRECT)
+        # ------------------------------
         phase_rad = np.angle(fft_acc[idx])
-        phase_deg = np.degrees(phase_rad) % 360.0
+        phase_deg = (np.degrees(phase_rad) + 360.0) % 360.0
 
         # ------------------------------
-        # Return balancing quantities
+        # Amplitude (CORRECT 1× ONLY)
         # ------------------------------
+        fft_mag = np.abs(fft_acc[idx])
+
+        coherent_gain = 0.5        # Hann window
+        N = len(acc_win)
+
+        acc_amp_pk = (2.0 * fft_mag) / (N * coherent_gain)
+
         return {
             "phase_deg": phase_deg,
             "phase_rad": phase_rad,

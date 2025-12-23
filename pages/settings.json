@@ -13,6 +13,48 @@
     "Velocity Engineering Unit": "mm/s",
     "Velocity Spectrum Type": "Peak"
   },
-  "buffer_size": 8192,
-  "input_channels": null
+  "input_channels": [
+    {
+      "channel": "Ch0",
+      "quantity": "Acceleration",
+      "sensitivity": "100",
+      "unit": "mv/g",
+      "input_mode": "IEPE"
+    },
+    {
+      "channel": "Ch1",
+      "quantity": "Acceleration",
+      "sensitivity": "100",
+      "unit": "mv/g",
+      "input_mode": "IEPE"
+    },
+    {
+      "channel": "Ch2",
+      "quantity": "Acceleration",
+      "sensitivity": "100",
+      "unit": "mv/g",
+      "input_mode": "IEPE"
+    },
+    {
+      "channel": "Ch3",
+      "quantity": "Acceleration",
+      "sensitivity": "100",
+      "unit": "mv/g",
+      "input_mode": "IEPE"
+    },
+    {
+      "channel": "Ch4",
+      "quantity": "Acceleration",
+      "sensitivity": "100",
+      "unit": "mv/g",
+      "input_mode": "IEPE"
+    },
+    {
+      "channel": "Ch5",
+      "quantity": "Acceleration",
+      "sensitivity": "100",
+      "unit": "mv/g",
+      "input_mode": "IEPE"
+    }
+  ]
 }

@@ -60,24 +60,7 @@ class TouchViewBox(pg.ViewBox):
         else:
             self._last_dist = None
             super().touchEvent(ev)
-        # def touchEvent(self, ev):
-    #     if len(ev.touchPoints()) == 2:
-    #         tp1, tp2 = ev.touchPoints()
-    #         p1 = tp1.pos()
-    #         p2 = tp2.pos()
-    #         dist = (p2 - p1).manhattanLength()
-
-    #         if hasattr(self, "_last_dist"):
-    #             factor = dist / self._last_dist if self._last_dist != 0 else 1
-    #             self.scaleBy((1 / factor, 1 / factor))
-    #         self._last_dist = dist
-    #         ev.accept()
-    #     elif len(ev.touchPoints()) < 2:
-    #         self._last_dist = None
-
-
-
-
+       
 
 class WaveformPage(QWidget):
     def __init__(self, main_window):

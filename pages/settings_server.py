@@ -6,18 +6,20 @@ from pathlib import Path
 
 # Save settings file in the same folder as this script
 DATA_FILE = Path(__file__).parent / "settings.json"
-DATA_FILE.parent.mkdir(parents=True, exist_ok=True)  # Create dir if needed
+DATA_FILE.parent.mkdir(parents=True, exist_ok=True) 
+
+FILTERS_FILE = Path(__file__).parent / "fir_filters.json"
 
 _lock = threading.Lock()
 app = Flask(__name__)
 
-@app.route("/settings", methods=["GET", "POST"])
+@app.route("/settings", methods=["GET", "PUT", ])
 def handle_settings():
     with _lock:
-        if request.method == "POST":
+        if request.method == "PUT":
             with open(DATA_FILE, "w") as f:
                 json.dump(request.get_json(force=True), f, indent=2)
-            return "", 204
+            return jsonify(request.get_json()), 200
         elif request.method == "GET":
             if DATA_FILE.exists():
                 with open(DATA_FILE) as f:

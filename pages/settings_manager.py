@@ -7,6 +7,7 @@ import pathlib
 import logging
 from typing import Dict, Any
 import requests
+import time
 
 # REST API endpoint (local Flask server on the Pi)
 SETTINGS_URL = "http://127.0.0.1:8000/settings"
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 def save_settings(data: Dict[str, Any]) -> None:
     for attempt in range(1,_RETRIES + 1):
         try:
-            resp = requests.post(SETTINGS_URL, json = data, timeout = _DEFAULT_TIMEOUT)
+            resp = requests.put(SETTINGS_URL, json = data, timeout = _DEFAULT_TIMEOUT)
 
             resp.raise_for_status()
             logger.info(" Settings saved to REST service (attempt %d).", attempt)

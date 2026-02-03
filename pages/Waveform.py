@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QMenu, QStackedWidget, QListWidget
 )
 from PyQt6 import QtGui
-from PyQt6.QtCore import Qt, QTimer, QDateTime
+from PyQt6.QtCore import Qt, QTimer, QDateTime,QPointF
 from backend.mcc_backend import Mcc172Backend
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from pages.AnalysisParameters import AnalysisParameter,DisplayPreferences,InputChannelsDialog
@@ -24,7 +24,7 @@ from functools import partial
 
 from pages.tachometer import TachometerReader
 from matplotlib.figure import Figure
-import os, csv
+import os, csv, time
 
  
 import numpy as np
@@ -37,30 +37,123 @@ class TouchViewBox(pg.ViewBox):
         self.setMouseEnabled(x=False, y=False)  # Disable mouse panning
         self.setAcceptTouchEvents(True) #enabing the touch object by using graphicQobject class
     #pinch to zoom of two fingers logic and also scaling done in x and y axis
+        self._last_dist = None
+        self._last_center = None
+        self._is_pinching = False
+        self._touch_start_time = 0
+
+        self.cursor_enabled = False
+        self.cursors = {}
+        self.enableAutoRange(enable=True)
+        self.user_has_zoomed = False
+        self.manual_zoom_range = None
 
     def touchEvent(self, ev):
         # Skip zooming if cursor is being dragged
-        if self.cursor_enabled and any(cursor.moving for cursor in self.cursors.values()):
+        if self.cursor_enabled and any(getattr(cursor, 'moving', False) for cursor in self.cursors.values()):
             super().touchEvent(ev)
             return
 
+        
+
         touch_points = ev.touchPoints()
+        num_touches = len(touch_points)
         if len(touch_points) == 2:
-            tp1, tp2 = touch_points
+            self._is_pinching = True
+            tp1,tp2 = touch_points[0], touch_points[1]
+
+
             p1 = tp1.pos()
             p2 = tp2.pos()
-            dist = (p2 - p1).manhattanLength()
-            if self._last_dist is not None and self._last_dist != 0:
-                factor = dist / self._last_dist
-                self.scaleBy((1 / factor, 1 / factor))
-                self._last_dist = dist
-                ev.accept()
+            
+            dx = p2.x() - p1.x()
+            dy = p2.y() - p1.y()
+            current_dist = sqrt(dx*dx + dy*dy)
+            center_x = (p1.x() + p2.x()) /2
+            center_y = (p1.y() + p2.y()) /2
+            center_point = QPointF(center_x, center_y)
+
+            try:
+                center_view = self.mapSceneToView(center_point)
+            except:
+                self._last_dist = None
+                return
+
+            if self._last_dist is not None and self._last_dist > 10:
+                scale_factor = current_dist /self._last_dist
+
+                scale_factor = max(0.5, min(2.0, scale_factor))
+
+                self.scaleBy((1.0/scale_factor, 1.0/scale_factor), center = center_view)
+
+                self.enableAutoRange(enable=False)
+                self.user_has_zoomed = True
+                self.manual_zoom_range = (self.viewRange()[0][:], self.viewRange()[1][:])
+
+            self._last_dist = current_dist
+            self._last_center = center_view
+
+            ev.accept()
+            return
+        elif num_touches == 1:
+            tp = touch_points[0]
+
+            if tp.state() == tp.TouchPointState.TouchPointReleased:
+                self._last_dist = None
+                self._last_center = None
+                self._is_pinching = False
+
+                super().touchEvent(ev)
+                return
+
+            elif tp.state() == tp.TouchPointState.TouchPointPressed:
+                self._touch_start_time = time.time()
+                self._is_pinching = False
+                super().touchEvent(ev)
+                return
+
+            elif tp.state() == tp.TouchPointState.TouchPointMoved:
+                super().touchEvent(ev)
+                return
+
             else:
-                self._last_dist = dist
-        else:
-            self._last_dist = None
-            super().touchEvent(ev)
-       
+                self._last_dist = None
+                self._last_center = None
+                self._is_pinching = False
+                super().touchEvent(ev)
+
+    def reset_zoom(self):
+        self.user_has_zoomed = False
+        self.manual_zoom_range = None
+        self.enableAutoRange(enable=True)
+
+class DraggableCursor(pg.InfiniteLine):
+
+    def __init__(self, parent_plot, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.parent_plot = parent_plot
+        self._is_moving = False
+        self._initial_range = None
+
+    def isMoving(self):
+        return self._is_moving
+
+    def mouseDragEvent(self, ev):
+        if ev.button() != Qt.MouseButton.LeftButton:
+            return
+        if ev.isStart():
+            self._is_moving = True
+            vb = self.parent_plot.getViewBox()
+            self._initial_range = (vb.viewRange()[0][:], vb.viewRange()[1][:])
+        super().mouseDragEvent(ev)
+
+        if self._initial_range:
+            vb = self.parent_plot.getViewBox()
+            vb.setRange(xRange=self._initial_range[0] ,yRange = self._initial_range[1], padding = 0)
+
+        if ev.isFinish():
+            self._is_moving = False
+            self._initial_range = None
 
 class WaveformPage(QWidget):
     def __init__(self, main_window):
@@ -97,16 +190,26 @@ class WaveformPage(QWidget):
         self.trace_mode_default = stored.get("trace_mode_index", 0)
         self.input_channels_data = stored.get("input_channels", None)
         self.buffer_size = stored.get("buffer_size", 8192)
+        saved_sample_rate = stored.get("sample_rate", None)
+        if saved_sample_rate is None:
+
+            # Calculate from saved fmax if sample_rate not in JSON
+            saved_sample_rate = int(self.selected_fmax_hz * 2.56)
        
 
         print("selected fmax:",self.selected_fmax_hz)
-        self.daq = Mcc172Backend(buffer_size = self.buffer_size)
+        self.daq = Mcc172Backend(buffer_size = self.buffer_size,sample_rate=saved_sample_rate)
         self.daq.setup()
+        self.update_interval_ms = int((self.buffer_size / self.daq.actual_rate) * 1000 * 0.85)
+
+        print(f"Buffer size: {self.buffer_size}, Actual sample rate: {self.daq.actual_rate}, Update interval: {self.update_interval_ms} ms")
       
         self.zoom_enabled = False
         self.cursor_enabled   = False
         self.cursors          = {}
         self.delta_labels     = {}  
+        self.cursor_value_labels = {}
+        self.locked_ranges = {}
 
         self.input_channels_dialog = InputChannelsDialog()
         if self.input_channels_data:
@@ -120,7 +223,9 @@ class WaveformPage(QWidget):
         self.display_settings   = stored.get("display_settings", {
             "Acceleration Spectrum Type": "RMS",
             "Acceleration Engineering Unit": "g",
+            "Velocity Spectrum Type": "Peak",
             "Velocity Engineering Unit": "mm/s",
+
             "Displacement Spectrum Type": "RMS",
             "Displacement Engineering Unit": "µm",
         })
@@ -384,8 +489,9 @@ class WaveformPage(QWidget):
             "bottom_channel": self.bottom_channel,
             "trace_mode_index": self.stacked_views.currentIndex(),
             "display_settings": self.display_settings,
-            
-            "input_channels": self.input_channels_dialog.data
+
+            "input_channels": self.input_channels_dialog.data,
+            "sample_rate": self.daq.sample_rate,
         })
         super().closeEvent(event)
 
@@ -403,7 +509,7 @@ class WaveformPage(QWidget):
         try:
             bot_sens = float(self.input_channels_dialog.data[bottom]["sensitivity"]) / 1000.0
         except (KeyError, IndexError, AttributeError):
-            print("⚠️ Using default sensitivity: 0.1 V/g for Bottom Channel")
+            print("Using default sensitivity: 0.1 V/g for Bottom Channel")
             bot_sens = 0.1  # Default value in V/g
 
         
@@ -414,10 +520,14 @@ class WaveformPage(QWidget):
     def make_pg_plot(self, title="", xlabel="", y_label=""):
         vb = TouchViewBox()
         plot = pg.PlotWidget(viewBox=vb)
-        plot.showGrid(x=True, y=True)
-        plot.setTitle(title)
-        plot.setLabel('left', y_label)
-        plot.setLabel('bottom', xlabel)
+        plot.showGrid(x=True, y=True,alpha =0.3)
+        plot.setTitle(title, color ='r', size ='14pt')
+        plot.setLabel('left', y_label, color = 'red', size ='12pt')
+        plot.setLabel('bottom', xlabel,color = "red", size ='12pt')
+        plot.setAntialiasing(True)
+
+        vb.cursor_enabled = False
+        vb.cursors = {}
         return plot
 
 
@@ -434,26 +544,27 @@ class WaveformPage(QWidget):
         return False
     
     def handle_pinch(self, pinch):
-        scale_factor = pinch.scaleFactor()
-        if scale_factor == 0:
-            return
+        # scale_factor = pinch.scaleFactor()
+        # if scale_factor == 0:
+        #     return
 
-        view_index = self.stacked_views.currentIndex()
+        # view_index = self.stacked_views.currentIndex()
 
-        if view_index == 1:
-            for plot in [self.pg_waveform, self.pg_spectrum]:
-                vb = plot.getViewBox()
-                vb.scaleBy((1 / scale_factor, 1 / scale_factor))
+        # if view_index == 1:
+        #     for plot in [self.pg_waveform, self.pg_spectrum]:
+        #         vb = plot.getViewBox()
+        #         vb.scaleBy((1 / scale_factor, 1.0))
 
-        elif view_index == 2:
-            for plot in [self.pg_waveform_top, self.pg_waveform_bottom]:
-                vb = plot.getViewBox()
-                vb.scaleBy((1 / scale_factor, 1 / scale_factor))
+        # elif view_index == 2:
+        #     for plot in [self.pg_waveform_top, self.pg_waveform_bottom]:
+        #         vb = plot.getViewBox()
+        #         vb.scaleBy((1 / scale_factor, 1.0))
 
-        elif view_index == 3:
-            for plot in [self.pg_spectrum_top, self.pg_spectrum_bottom]:
-                vb = plot.getViewBox()
-                vb.scaleBy((1 / scale_factor, 1 / scale_factor))
+        # elif view_index == 3:
+        #     for plot in [self.pg_spectrum_top, self.pg_spectrum_bottom]:
+        #         vb = plot.getViewBox()
+        #         vb.scaleBy((1 / scale_factor, 1.0))
+        pass
 
 
     def attach_focus_value_overlay(
@@ -464,81 +575,88 @@ class WaveformPage(QWidget):
 
         text_item = pg.TextItem(
             "",
-            anchor=(0, 1),               # small, compact anchor
-            fill=(255, 255, 200, 200),
-            color='k',
-            border='k'
+            anchor=(0.5, 1.2),               # small, compact anchor
+            fill=(50, 50, 50, 230),
+            color=(255, 255 ,255),
+            border= pg.mkPen('cyan', width =2)
         )
-        text_item.setFont(QtGui.QFont("Arial", 8))
+        text_item.setFont(QtGui.QFont("Arial", 11, QtGui.QFont.Weight.Bold))
         plot_widget.addItem(text_item)
+        text_item.setZValue(2000)
         text_item.hide()
 
         # avoid duplicate connections
         try:
-            plot_widget.scene().sigMouseClicked.disconnect(self._tap_cb)
+            plot_widget.scene().sigMouseClicked.disconnect()
         except:
             pass
 
-        def _tap_cb(event):
+        def handle_finger_tap(event):
             # IMPORTANT: this makes touch events work
-            if not event.buttons():      # finger tap has no mouse buttons
+            if event.button() != 1 and event.buttons():      # finger tap has no mouse buttons
                 pass                     # allow tap
-            if not len(x_array):
+            if not len(x_array) or not len(y_array):
                 return
 
             # convert tap → x-value
-            pos = event.scenePos()
-            plot = plot_widget.getPlotItem()
-            x_clicked = plot.vb.mapSceneToView(pos).x()
+            scene_pos = event.scenePos()
+            plot_item = plot_widget.getPlotItem()
+            
+            try:
+                view_pos = plot_item.vb.mapSceneToView(scene_pos)
+                x_tapped = view_pos.x()
+                y_tapped = view_pos.y()
+            except:
+                return
 
-            # find nearest point
-            idx = int(np.argmin(np.abs(x_array - x_clicked)))
+            distances = np.abs(x_array - x_tapped)
+            idx = int(np.argmin(distances))
 
-            # snap to local peak if needed
-            if snap_to_peak:
-                start = max(0, idx - win)
-                end   = min(len(y_array) - 1, idx + win)
-                idx   = start + int(np.argmax(y_array[start:end + 1]))
+            if idx < 0 or idx >= len(y_array):
+                return
+
+            if snap_to_peak and win > 0:
+                start_idx = max(0, idx - win)
+                end_idx = min(len(y_array), idx + win +1)
+
+                local_y = y_array[start_idx:end_idx]
+                if len(local_y) > 0:
+                    local_peak = np.argmax(local_y)
+                    idx = start_idx + local_peak
 
             x_val = x_array[idx]
             y_val = y_array[idx]
 
-            text_item.setText(f"{x_val:.3f} {x_unit}, {y_val:.3f} {y_unit}")
+            if x_unit == "Hz":
+                display_text = f"{x_val:.2f} Hz\n {y_val:.4f} {y_unit}"
 
-            # --------- KEEP LABEL INSIDE ---------
-            vb = plot.vb
-            view = vb.viewRect()
+            else:
+                display_text = f"{x_val:.4f} {x_unit}\n {y_val:.4f} {y_unit}"
 
-            xmin, xmax = view.left(), view.right()
-            ymin, ymax = view.bottom(), view.top()
+            text_item.setText(display_text)
 
-            tx, ty = x_val, y_val
+            vb = plot_item.vb
+            view_rect = vb.viewRect()
 
-            # margins
-            dx = (xmax - xmin) * 0.04
-            dy = (ymax - ymin) * 0.04
+            x_min, x_max = view_rect.left(), view_rect.right()
+            y_min, y_max = view_rect.bottom(), view_rect.top()
 
-            # left edge
-            if tx < xmin + dx:
-                tx = xmin + dx
-            # right edge
-            if tx > xmax - dx:
-                tx = xmax - dx
-            # bottom edge
-            if ty < ymin + dy:
-                ty = ymin + dy
-            # top edge
-            if ty > ymax - dy:
-                ty = ymax - dy
+            x_margin = (x_max - x_min) * 0.08
+            y_margin = (y_max - y_min) *0.1
 
-            text_item.setPos(tx, ty)
-            # -------------------------------------
+            label_x = np.clip(x_val, x_min + x_margin, x_max + x_margin)
+            label_y = np.clip(y_val + y_margin,y_min + y_margin, y_max-y_margin)
 
+            text_item.setPos(label_x, label_y)
             text_item.show()
-            QTimer.singleShot(2000, text_item.hide)
 
-        self._tap_cb = _tap_cb
-        plot_widget.scene().sigMouseClicked.connect(self._tap_cb)
+            QTimer.singleShot(4000, text_item.hide)
+
+            event.accept()
+
+        plot_widget.scene().sigMouseClicked.connect(handle_finger_tap)
+
+
 
     def toggle_recording(self):
         if self.record_btn.isChecked():
@@ -614,7 +732,7 @@ class WaveformPage(QWidget):
         print("🔎 Trying codec: mp4v")
 
         if not self.video_writer.isOpened():
-            print("❌ mp4v codec failed. Trying fallback: XVID")
+            print("mp4v codec failed. Trying fallback: XVID")
             fourcc = cv2.VideoWriter_fourcc(*"XVID")
             video_path = os.path.join(self.session_folder, "recording.avi")
             self.video_writer = cv2.VideoWriter(video_path, fourcc, 5.0, (rect.width(), rect.height()))
@@ -920,13 +1038,11 @@ class WaveformPage(QWidget):
         layout.addLayout(readings_layout)
 
 
-        self.pg_readings_spectrum = self.make_pg_plot("spectrum","Frequency (Hz), Magnitude (RMS)")
+        self.pg_readings_spectrum = self.make_pg_plot("spectrum","Frequency (Hz)", "Magnitude (RMS)")
         layout.addWidget(self.pg_readings_spectrum)
         return widget
 
 
-    
-    
     def create_reading_box(self, label_text, unit_text):
         layout = QVBoxLayout()
         label = QLabel(label_text)
@@ -1016,7 +1132,8 @@ class WaveformPage(QWidget):
                 "bottom_channel": self.bottom_channel,
                 "trace_mode_index": self.stacked_views.currentIndex(),
                 "display_settings": self.display_settings,
-                "input_channels": self.input_channels_dialog.data
+                "input_channels": self.input_channels_dialog.data,
+                "sample_rate": self.daq.sample_rate
             })
             dialog.accept()
 
@@ -1031,8 +1148,9 @@ class WaveformPage(QWidget):
 
    
     def start_measurement(self):
+        
         self.daq.start_acquisition()
-        self.timer.start(1000)
+        self.timer.start(self.update_interval_ms)
         self.start_button.setVisible(False)
         self.stop_button.setVisible(True)
 
@@ -1040,8 +1158,6 @@ class WaveformPage(QWidget):
     def stop_measurement(self):
         self.daq.stop_scan()
         self.timer.stop()
-        
-        
         #self.is_running = False
         self.start_button.setVisible(True)
         self.stop_button.setVisible(False)
@@ -1062,15 +1178,42 @@ class WaveformPage(QWidget):
         else:
             return
 
+        cursor_color = 'yellow' if name.lower() == "x1" else 'cyan'
+
         cursors = []
         labels = []
 
         for plot in plots:
-            cursor = pg.InfiniteLine(angle=90, movable=True, pen='y', name=name)
+            vb = plot.getViewBox()
+            current_x_range = vb.viewRange()[0]
+            current_y_range = vb.viewRange()[1]
+            
+            plot_id = id(plot)
+            self.locked_ranges[plot_id] = (current_x_range, current_y_range)
+
+            cursor = DraggableCursor(
+                parent_plot = plot,
+                angle=90,
+                movable = True,
+                pen = pg.mkPen(cursor_color, width =2, style = Qt.PenStyle.DashLine),
+                name=name
+            )
             cursor.setZValue(1000)
+
+            x_center = (current_x_range[0] + current_x_range[1]) / 2
+            cursor.setValue(x_center)
+
             plot.addItem(cursor)
 
-            label = pg.TextItem("", anchor=(0.5, 1.0), color='y')
+            label = pg.TextItem(
+                "",
+                anchor = (0.5,0),
+                fill = (50,50,50,200),
+                color = cursor_color,
+                border = pg.mkPen(cursor_color, width =2)
+            )
+            label.setFont(QtGui.QFont("Arial",10,QtGui.QFont.Weight.Bold))
+            label.setZValue(1001)
             plot.addItem(label)
 
             # Store references
@@ -1078,19 +1221,73 @@ class WaveformPage(QWidget):
             labels.append(label)
 
             # Connect signal to update label
-            cursor.sigPositionChanged.connect(lambda _, c=cursor, lbl=label, p=plot: self.update_spectrum_label(c, lbl, p))
+            cursor.sigPositionChanged.connect(partial(self.update_cursor_label,cursor,label,plot))
 
-        # Save into dictionaries
+            vb.cursor_enabled = True
+            vb.cursors[name] = cursors
+
         self.cursors[name] = cursors
-        self.delta_labels[name] = labels
+        self.cursor_value_labels[name] =  labels
 
-        # Trigger initial update
+        self.cursor_enabled = True
+
         for cursor, label, plot in zip(cursors, labels, plots):
-            self.update_spectrum_label(cursor, label, plot)
-    def update_spectrum_label(self, cursor, label, plot):
-        pos = cursor.value()
-        data_items = plot.listDataItems()
+            self.update_cursor_label(cursor, label, plot)
 
+        self.update_cursor_delta()
+
+        print(f" Cursor {name} added to {len(plots)} plot(s)")
+    # def update_spectrum_label(self, cursor, label, plot):
+    #     pos = cursor.value()
+    #     data_items = plot.listDataItems()
+
+    #     if not data_items:
+    #         label.setText("")
+    #         return
+
+    #     x_data = data_items[0].xData
+    #     y_data = data_items[0].yData
+
+    #     if x_data is None or y_data is None or len(x_data) == 0:
+    #         label.setText("")
+    #         return
+
+    #     # Find the closest index
+    #     idx = np.abs(x_data - pos).argmin()
+    #     x_val = x_data[idx]
+    #     y_val = y_data[idx]
+
+    #     unit_x = "Hz"
+    #     unit_y = plot.getAxis('left').labelText or "unit"
+
+    #     label.setText(f"{cursor.name()}: {x_val:.2f}{unit_x}, {y_val:.2f}{unit_y}")
+
+    #     # Keep label at the top of visible area
+    #     vb = plot.getViewBox()
+    #     xr, yr = vb.viewRange()
+    #     label.setPos(x_val, yr[1])  # Y at top of current view
+
+    #     # Prevent auto-scale
+    #     vb.setXRange(*xr, padding=0)
+    #     vb.setYRange(*yr, padding=0)
+    def update_cursor_label(self, cursor, label, plot):
+        """Update individual cursor label without affecting plot scaling"""
+        # Get current view range and LOCK IT
+        vb = plot.getViewBox()
+        plot_id = id(plot)
+        
+        # Get locked range if it exists
+        if plot_id in self.locked_ranges:
+            locked_x, locked_y = self.locked_ranges[plot_id]
+        else:
+            locked_x, locked_y = vb.viewRange()[0], vb.viewRange()[1]
+            self.locked_ranges[plot_id] = (locked_x, locked_y)
+        
+        # Get cursor position
+        x_pos = cursor.value()
+        
+        # Get data from plot
+        data_items = plot.listDataItems()
         if not data_items:
             label.setText("")
             return
@@ -1102,29 +1299,46 @@ class WaveformPage(QWidget):
             label.setText("")
             return
 
-        # Find the closest index
-        idx = np.abs(x_data - pos).argmin()
+        # Find nearest data point
+        idx = np.abs(x_data - x_pos).argmin()
         x_val = x_data[idx]
         y_val = y_data[idx]
 
-        unit_x = "Hz"
-        unit_y = plot.getAxis('left').labelText or "unit"
+        # Get units from axis labels
+        x_label = plot.getAxis('bottom').labelText or "X"
+        y_label = plot.getAxis('left').labelText or "Y"
+        
+        # Determine units
+        if "Hz" in x_label or "Frequency" in x_label:
+            unit_x = "Hz"
+        else:
+            unit_x = "s"
+        
+        # Extract unit from y_label (e.g., "g (RMS)" -> "g")
+        if "(" in y_label:
+            unit_y = y_label.split("(")[0].strip()
+        else:
+            unit_y = y_label
 
-        label.setText(f"{cursor.name()}: {x_val:.2f}{unit_x}, {y_val:.2f}{unit_y}")
+        # Format label text
+        label_text = f"{cursor.name()}\n{x_val:.2f} {unit_x}\n{y_val:.4f} {unit_y}"
+        label.setText(label_text)
 
-        # Keep label at the top of visible area
-        vb = plot.getViewBox()
-        xr, yr = vb.viewRange()
-        label.setPos(x_val, yr[1])  # Y at top of current view
+        # Position label at top of cursor, within view
+        label_y = locked_y[1] - (locked_y[1] - locked_y[0]) * 0.05  # Near top
+        label.setPos(x_val, label_y)
 
-        # Prevent auto-scale
-        vb.setXRange(*xr, padding=0)
-        vb.setYRange(*yr, padding=0)
+        # CRITICAL: Restore locked range to prevent scaling
+        vb.setRange(xRange=locked_x, yRange=locked_y, padding=0)
+        
+        # Update delta display
+        self.update_cursor_delta()
+
     def remove_cursor(self, name):
         view_index = self.stacked_views.currentIndex()
 
         if view_index == 1:
-            plots = [self.pg_waveform]
+            plots = [self.pg_spectrum]
 
         elif view_index == 2:
             plots = [self.pg_waveform_top, self.pg_waveform_bottom]
@@ -1138,31 +1352,47 @@ class WaveformPage(QWidget):
         if name not in self.cursors:
              return
 
-        for plot,cursor, label in zip(plots,self.cursors[name],self.delta_labels[name]):
+        for plot,cursor, label in zip(plots,self.cursors[name],self.cursor_value_labels[name]):
             plot.removeItem(cursor)
             plot.removeItem(label)
 
+            vb = plot.getViewBox()
+            if name in vb.cursors:
+                del vb.cursors[name]
+
+            if not vb.cursors:
+                vb.cursor_enabled = False
+
         del self.cursors[name]
-        del self.delta_labels[name]
-        self.cursor_info_label.setText("cursor Info: ")
-        self.cursor_info_label.setText("cursor Info: ")
+        del self.cursor_value_labels[name]
+
+        if not self.cursors:
+            self.cursor_enabled = False
+        self.update_cursor_delta()
 
     def update_cursor_delta(self):
-        if "X1" not in self.cursors or "X2" not in self.cursors:
+        if "x1" not in self.cursors or "x2" not in self.cursors:
             self.cursor_info_label.setText("Cursor Info: ")
             return
 
         view_index = self.stacked_views.currentIndex()
-        unit_x = "s" if view_index in (1, 2) else "Hz"
+        
+        unit_x = "s" if view_index in (0, 2) else "Hz"
 
         try:
-            x1 = self.cursors["X1"][0].value()
-            x2 = self.cursors["X2"][0].value()
-        except Exception:
+            x1 = self.cursors["x1"][0].value()
+            x2 = self.cursors["x2"][0].value()
+        except Exception as e:
             self.cursor_info_label.setText("Cursor Info: Error reading cursor values")
             return
 
         delta_x = abs(x2 - x1)
+
+        if unit_x == "s" and delta_x > 0:
+            freq_hz = 1.0 / delta_x
+            freq_info = f" | Frequency: {freq_hz:.2f} Hz"
+        else:
+            freq_info = ""
 
         # Pick plots based on current view
         if view_index == 1:
@@ -1208,172 +1438,56 @@ class WaveformPage(QWidget):
 
         self.cursor_info_label.setText("".join(label_lines))
 
+    def update_plot_with_zoom_preservation(self, plot, x_data, y_data,
+                                       pen_color='cyan',
+                                       x_label="Frequency (Hz)",
+                                       y_label=None):
+
+        vb = plot.getViewBox()
+
+        if vb.user_has_zoomed:
+            vb.enableAutoRange(enable=False)
+            saved_range = vb.manual_zoom_range
+        else:
+            saved_range = None
+
+        plot.clear()
+        plot.plot(x_data, y_data, pen=pg.mkPen(pen_color, width=2))
+
+        # ✅ RE-APPLY LABELS AFTER CLEAR
+        plot.setLabel('bottom', x_label, color='w', size='12pt')
+        if y_label:
+            plot.setLabel('left', y_label, color='w', size='12pt')
+
+        if saved_range:
+            vb.setRange(xRange=saved_range[0], yRange=saved_range[1], padding=0)
+
+    def reset_all_zoom(self):
+
+        view_index =  self.stacked_views.currentIndex()
+
+        if view_index ==1:
+            self.pg_waveform.getViewBox().reset_zoom()
+            self.pg_spectrum.getViewBox().reset_zoom()
+
+        elif view_index == 2:
+            self.pg_waveform_top.getViewBox().reset_zoom()
+            self.pg_waveform_bottom.getViewBox().reset_zoom()
+        elif view_index == 3:
+            self.pg_spectrum_top.getViewBox().reset_zoom()
+            self.pg_spectrum_bottom.getViewBox().reset_zoom()
+        elif view_index == 5:
+            self.pg_readings_spectrum.getViewBox().reset_zoom()
+
     
 
-    # def update_plot(self):
-    #     top_sens, bottom_sens = self.get_selected_channel_sensitivities()
-    #     self.top_sens, self.bot_sens = top_sens, bottom_sens
-
-    #     results = self.daq.get_latest_waveform(
-    #         fmax_hz=self.selected_fmax_hz,
-    #         fmin_hz=self.selected_fmin_hz,
-    #         sensitivities=[top_sens, bottom_sens]
-    #     )
-
-    #     if not results or len(results) == 0:
-    #         return
-
-    #     channel_to_result = {ch: res for ch, res in zip(self.daq.channel, results)}
-    #     top_result = channel_to_result.get(self.top_channel, self.daq._empty_result())
-    #     bottom_result = channel_to_result.get(self.bottom_channel, self.daq._empty_result())
-
-    #     if self.top_channel == self.bottom_channel:
-    #         bottom_result = top_result
-
-    #     self.t = top_result["time"]
-    #     quantity = self.selected_quantity
-
-    #     spectrum_type = self.display_settings.get(f"{quantity} Spectrum Type", "")
-    #     eng_unit = self.display_settings.get(f"{quantity} Engineering Unit", "")
-
-    #     # --- Pick raw waveform and spectrum data from backend ---
-    #     if quantity == "Velocity":
-    #         y_top = top_result["velocity"]
-    #         y_bot = bottom_result["velocity"]
-    #         self.freqs = top_result["freqs_vel"]
-    #         self.fft_mags_top = top_result["fft_mags_vel"]
-    #         self.fft_mags_bot = bottom_result["fft_mags_vel"]
-    #     elif quantity == "Displacement":
-    #         y_top = top_result["displacement"]
-    #         y_bot = bottom_result["displacement"]
-    #         self.freqs = top_result["fft_freqs_disp"]
-    #         self.fft_mags_top = top_result["fft_mags_disp"]
-    #         self.fft_mags_bot = bottom_result["fft_mags_disp"]
-    #     else:  # Acceleration
-    #         y_top = top_result["acceleration"]
-    #         y_bot = bottom_result["acceleration"]
-    #         self.freqs = top_result["fft_freqs"]
-    #         self.fft_mags_top = top_result["fft_mags"]
-    #         self.fft_mags_bot = bottom_result["fft_mags"]
-
-    #     # ✅ Spectrum + waveform unit conversion
-    #     spectrum_factor = {
-    #         "Peak": 1.0,
-    #         "RMS": 1 / np.sqrt(2),
-    #         "Peak-Peak": 2.0
-    #     }.get(spectrum_type, 1.0)
-
-    #     unit_factor = {
-    #         "Acceleration": {
-    #             "g": 1.0, "m/s²": 9.80665, "mm/s²": 9806.65, "cm/s²": 980.665, "in/s²": 386.089,
-    #         },
-    #         "Velocity": {
-    #             "mm/s": 1.0, "cm/s": 0.1, "m/s": 0.001, "in/s": 0.0393701,
-    #         },
-    #         "Displacement": {
-    #             "µm": 1.0, "μm": 1.0, "mm": 0.001, "cm": 0.0001, "m": 1e-6, "in": 0.0000393701,
-    #         },
-    #     }.get(quantity, {}).get(eng_unit, 1.0)
-
-    #     self.fft_mags_top *= spectrum_factor * unit_factor
-    #     self.fft_mags_bot *= spectrum_factor * unit_factor
-    #     y_top *= unit_factor
-    #     y_bot *= unit_factor
-
-    #     y_unit = f"{eng_unit} ({spectrum_type})" if self.stacked_views.currentIndex() in (1, 3, 5) else eng_unit
-
-    #     view_index = self.stacked_views.currentIndex()
-
-    #     if view_index == 0:  # Readings + Waveform
-    #         self.acc_input["input"].setText(f"{top_result['acc_peak']:.2f}")
-    #         self.vel_input["input"].setText(f"{top_resunamelt['rms_fft']:.2f}")
-    #         self.disp_input["input"].setText(f"{top_result['disp_pp']:.2f}")
-    #         self.freq_input["input"].setText(f"{top_result['dom_freq']:.2f}")
-
-    #         self.ax_waveform.clear()
-    #         self.ax_waveform.plot(self.t, y_bot)
-    #         self.ax_waveform.set_title("Waveform")
-    #         self.ax_waveform.set_xlabel("Time (s)")
-    #         self.ax_waveform.set_ylabel(y_unit)
-    #         margin = (max(y_bot) - min(y_bot)) * 0.1 or 0.2
-    #         self.ax_waveform.set_ylim(min(y_bot) - margin, max(y_bot) + margin)
-    #         self.ax_waveform.grid(True)
-
-    #         self.canvas_waveform.draw()
-
-    #     elif view_index == 1:  # Waveform + Spectrum
-    #         self.pg_waveform.clear()
-    #         self.pg_waveform.plot(self.t, y_top, pen='b')
-    #         self.pg_waveform.enableAutoRange(axis='y', enable=True)
-    #         self.pg_waveform.setLabel('left', y_unit)
-    #         self.attach_focus_value_overlay(self.pg_waveform, self.t, y_top, x_unit="s", y_unit=y_unit,snap_to_peak=True)
-
-    #         self.pg_spectrum.clear()
-    #         self.pg_spectrum.plot(self.freqs, self.fft_mags_bot, pen='r')
-    #         self.pg_spectrum.setXRange(self.selected_fmin_hz, self.selected_fmax_hz, padding=0)
-    #         self.pg_spectrum.enableAutoRange(axis='y', enable=True)
-    #         self.pg_spectrum.setLabel('left', y_unit)
-    #         self.attach_focus_value_overlay(self.pg_spectrum, self.freqs, self.fft_mags_bot, x_unit="Hz", y_unit=y_unit,snap_to_peak=True)
-
-    #     elif view_index == 2:  # Waveform + Waveform
-    #         self.pg_waveform_top.clear()
-    #         self.pg_waveform_top.plot(self.t, y_top, pen='b')
-    #         self.pg_waveform_top.enableAutoRange(axis='y', enable=True)
-    #         self.attach_focus_value_overlay(self.pg_waveform_top, self.t, y_top, x_unit="s", y_unit=y_unit,snap_to_peak=True)
-
-    #         self.pg_waveform_bottom.clear()
-    #         self.pg_waveform_bottom.plot(self.t, y_bot, pen='g')
-    #         self.pg_waveform_bottom.enableAutoRange(axis='y', enable=True)
-    #         self.attach_focus_value_overlay(self.pg_waveform_bottom, self.t, y_bot, x_unit="s", y_unit=y_unit,snap_to_peak=True)
-
-    #     elif view_index == 3:  # Spectrum + Spectrum
-    #         self.pg_spectrum_top.clear()
-    #         self.pg_spectrum_top.plot(self.freqs, self.fft_mags_top, pen='b')
-    #         self.pg_spectrum_top.setXRange(self.selected_fmin_hz, self.selected_fmax_hz, padding=0)
-    #         self.pg_spectrum_top.enableAutoRange(axis='y', enable=True)
-    #         self.pg_spectrum_top.setLabel('left', y_unit)
-
-    #         self.attach_focus_value_overlay(self.pg_spectrum_top, self.freqs, self.fft_mags_top, x_unit="Hz", y_unit=y_unit,snap_to_peak=True)
-
-    #         self.pg_spectrum_bottom.clear()
-    #         self.pg_spectrum_bottom.plot(self.freqs, self.fft_mags_bot, pen='g')
-    #         self.pg_spectrum_bottom.setXRange(self.selected_fmin_hz, self.selected_fmax_hz, padding=0)
-    #         self.pg_spectrum_bottom.enableAutoRange(axis='y', enable=True)
-    #         self.pg_spectrum_bottom.setLabel('left', y_unit)
-
-    #         self.attach_focus_value_overlay(self.pg_spectrum_bottom, self.freqs, self.fft_mags_bot, x_unit="Hz", y_unit=y_unit,snap_to_peak=True)
-
-    #     elif view_index == 4:  # Readings + Readings
-    #         self.acc_input0["input"].setText(f"{top_result.get('acc_peak', 0):.2f}")
-    #         self.vel_input0["input"].setText(f"{top_result.get('rms_fft', 0):.2f}")
-    #         self.disp_input0["input"].setText(f"{top_result.get('disp_pp', 0):.2f}")
-    #         self.freq_input0["input"].setText(f"{top_result.get('dom_freq', 0):.2f}")
-
-    #         self.acc_input1["input"].setText(f"{bottom_result.get('acc_peak', 0):.2f}")
-    #         self.vel_input1["input"].setText(f"{bottom_result.get('rms_fft', 0):.2f}")
-    #         self.disp_input1["input"].setText(f"{bottom_result.get('disp_pp', 0):.2f}")
-    #         self.freq_input1["input"].setText(f"{bottom_result.get('dom_freq', 0):.2f}")
-
-    #     elif view_index == 5:  # Readings + Spectrum
-    #         self.pg_readings_spectrum.clear()
-    #         self.pg_readings_spectrum.plot(self.freqs, self.fft_mags_top, pen="b")
-    #         self.pg_readings_spectrum.setXRange(self.selected_fmin_hz, self.selected_fmax_hz, padding=0)
-    #         self.pg_readings_spectrum.enableAutoRange(axis='y', enable=True)
-    #         self.attach_focus_value_overlay(self.pg_readings_spectrum, self.freqs, self.fft_mags_top, x_unit="Hz", y_unit=y_unit)
-
-    #         self.acc_input2["input"].setText(f"{top_result.get('acc_peak', 0):.2f}")
-    #         self.vel_input2["input"].setText(f"{top_result.get('rms_fft', 0):.2f}")
-    #         self.disp_input2["input"].setText(f"{top_result.get('disp_pp', 0):.2f}")
-    #         self.freq_input2["input"].setText(f"{top_result.get('dom_freq', 0):.2f}")
-
-    #     self.last_snapshot_data = results
 
     from math import sqrt
 
 # ────────────────────────────────────────────────────────────────────────
 #  Helpers – only define once in your file
 # ────────────────────────────────────────────────────────────────────────
-    def _spec_factor(self,base_kind: str, want: str) -> float:
+    def spec_factor(self,base_kind: str, want: str) -> float:
         """
         Convert a value expressed as Peak / RMS / Peak-Peak (base_kind)
         to the requested spectrum type (want).
@@ -1394,9 +1508,6 @@ class WaveformPage(QWidget):
     }
     # ────────────────────────────────────────────────────────────────────────
 
-
-
-
     def update_plot(self):
         # ─── Get newest data ────────────────────────────────────────────────
         top_sens, bot_sens = self.get_selected_channel_sensitivities()
@@ -1411,46 +1522,63 @@ class WaveformPage(QWidget):
         channel_to_result = {
             ch: res for ch, res in zip(self.daq.channel, results)
         }
-        top_result    = channel_to_result.get(self.top_channel,    self.daq._empty_result())
-        bottom_result = channel_to_result.get(self.bottom_channel, self.daq._empty_result())
+        top_result    = channel_to_result.get(self.top_channel,    self.daq.empty_result())
+        bottom_result = channel_to_result.get(self.bottom_channel, self.daq.empty_result())
         if self.top_channel == self.bottom_channel:
             bottom_result = top_result
 
         # ─── Display-preference pairs (unit + spec) ─────────────────────────
         acc_spec = self.display_settings.get("Acceleration Spectrum Type",  "Peak")
-        print("acc_spec",acc_spec)
         acc_unit = self.display_settings.get("Acceleration Engineering Unit", "g")
         vel_spec = self.display_settings.get("Velocity Spectrum Type",      "RMS")
         vel_unit = self.display_settings.get("Velocity Engineering Unit",   "mm/s")
         disp_spec = self.display_settings.get("Displacement Spectrum Type", "Peak-Peak")
         disp_unit = self.display_settings.get("Displacement Engineering Unit", "µm")
 
-        # ─── Scale backend metrics to chosen unit & spec ────────────────────
-        def _scaled_metrics(res):
+        quantity = self.selected_quantity
+        unit = self.display_settings.get(f"{quantity} Engineering Unit")
+        spec_type = self.display_settings.get(f"{quantity} Spectrum Type")
 
-            return {
-                "acc": res["acceleration"] *
-                    self._spec_factor("peak", acc_spec) *
-                    self._UNIT_FACTOR["Acceleration"][acc_unit],
-                "vel": res["velocity"] *
-                    self._spec_factor("rms", vel_spec) *
-                    self._UNIT_FACTOR["Velocity"][vel_unit],
-                "disp": res["displacement_ptps"] *
-                    self._spec_factor("pp", disp_spec) *
-                    self._UNIT_FACTOR["Displacement"][disp_unit],
-                
-            }
-        s =  _scaled_metrics(top_result)
-        print("result of velocity rms:",top_result["velocity_rms"])
-        print("acc",s["acc"])
-        print("vel",s["vel"])
+        OVERALL_KEYS = {
+            "Acceleration": {
+                "Peak":        "acc_peak",
+                "RMS":         "acceleration_rms",
+                "Peak-Peak":   "acceleration_ptps",
+            },
+            "Velocity": {
+                "Peak":        "velocity_peak",
+                "RMS":         "velocity_rms",
+                "Peak-Peak":   "velocity_ptps",
+            },
+            "Displacement": {
+                "Peak":        "displacement_peak",
+                "RMS":         "displacement_rms",
+                "Peak-Peak":   "displacement_ptps",
+            },
+        }
 
+        def get_overall_vibration_values(result, quantity, spec_type):
+            key = OVERALL_KEYS[quantity][spec_type]
+            return result.get(key, 0.0)
 
-        top_vals    = _scaled_metrics(top_result)
-        bottom_vals = _scaled_metrics(bottom_result)
+        # ─── Get overall values for readings ────────────────────────────────
+        acc_val = get_overall_vibration_values(top_result, "Acceleration", acc_spec)
+        vel_val = get_overall_vibration_values(top_result, "Velocity", vel_spec)
+        disp_val = get_overall_vibration_values(top_result, "Displacement", disp_spec)
+
+        acc_val *= self._UNIT_FACTOR["Acceleration"][acc_unit]
+        vel_val *= self._UNIT_FACTOR["Velocity"][vel_unit]
+        disp_val *= self._UNIT_FACTOR["Displacement"][disp_unit]
+
+        acce_val  = get_overall_vibration_values(bottom_result, "Acceleration", acc_spec)
+        vel_val1 = get_overall_vibration_values(bottom_result, "Velocity", vel_spec)
+        disp_val1 = get_overall_vibration_values(bottom_result, "Displacement", disp_spec)
+
+        acce_val *= self._UNIT_FACTOR["Acceleration"][acc_unit]
+        vel_val1 *= self._UNIT_FACTOR["Velocity"][vel_unit]
+        disp_val1 *= self._UNIT_FACTOR["Displacement"][disp_unit]
 
         # ─── Pick current quantity for waveform / spectrum view ─────────────
-        quantity = self.selected_quantity            # "Acceleration" / "Velocity" / "Displacement"
         if quantity == "Velocity":
             y_top = top_result["velocity"]
             y_bot = bottom_result["velocity"]
@@ -1470,30 +1598,15 @@ class WaveformPage(QWidget):
             fft_bot = bottom_result["fft_mags"]
             spec_choice, unit_choice = acc_spec, acc_unit
 
-        # ---- apply unit/spec scaling to waveform & spectrum data ----------
-        unit_factor      =self._UNIT_FACTOR[quantity][unit_choice]
-        spec_scaler_fft  = self._spec_factor("peak", spec_choice)       # fft mags are PEAK from backend
-        # frequency = self.rpm/60.0
-        # idx = np.argmin(np.abs(top_result["frequencies"] - frequency))
-        # fft_bin = top_result["fft_complex"][idx] if idx < len(top_result["fft_complex"]) else 0.0
-        # amplitude = np.abs(fft_bin) 
-        # phase_deg =  math.degrees(np.angle(fft_bin))
-
-        
-        
+        # ─── Apply unit/spec scaling to waveform & spectrum data ────────────
+        unit_factor = self._UNIT_FACTOR[quantity][unit_choice]
+        spec_scaler_fft = self.spec_factor("peak", spec_choice)
 
         y_top = y_top * unit_factor
         y_bot = y_bot * unit_factor
         mag_top = fft_top * spec_scaler_fft * unit_factor
         mag_bot = fft_bot * spec_scaler_fft * unit_factor
         self.freqs = top_result["frequencies"]
-        # ─── Update all reading-box unit labels once ───────────────────────
-        for box in (self.acc_input, self.acc_input0, self.acc_input1, self.acc_input2):
-            box["unit"].setText(f"{acc_unit} ({acc_spec})")
-        for box in (self.vel_input, self.vel_input0, self.vel_input1, self.vel_input2):
-            box["unit"].setText(f"{vel_unit} ({vel_spec})")
-        for box in (self.disp_input, self.disp_input0, self.disp_input1, self.disp_input2):
-            box["unit"].setText(f"{disp_unit} ({disp_spec})")
 
         # ─── GUI update according to current stacked view ──────────────────
         view = self.stacked_views.currentIndex()
@@ -1501,12 +1614,10 @@ class WaveformPage(QWidget):
         y_label_wave = unit_choice
         y_label_spec = f"{unit_choice} ({spec_choice})"
 
-        if view == 0:                   # Readings + Waveform
-            
-            self.acc_input["input"].setText(f"{top_vals['acc']:.2f}")
-            self.vel_input["input"].setText(f"{top_vals['vel']:.2f}")
-            self.disp_input["input"].setText(f"{top_vals['disp']:.2f}")
-            #self.freq_input["input"].setText(f"{top_vals['freq']:.2f}")
+        if view == 0:  # Readings + Waveform
+            self.acc_input["input"].setText(f"{acc_val:.2f}")
+            self.vel_input["input"].setText(f"{vel_val:.2f}")
+            self.disp_input["input"].setText(f"{disp_val:.2f}")
 
             self.ax_waveform.clear()
             self.ax_waveform.plot(t_vec, y_bot)
@@ -1515,69 +1626,71 @@ class WaveformPage(QWidget):
             self.ax_waveform.grid(True)
             self.canvas_waveform.draw()
 
-        elif view == 1:                 # Waveform + Spectrum
+        elif view == 1:  # Waveform + Spectrum
+            # Waveform
             self.pg_waveform.clear()
             self.pg_waveform.plot(t_vec, y_top, pen='b')
-            self.pg_waveform.setLabel('left', y_label_wave)
-            self.attach_focus_value_overlay(self.pg_waveform, t_vec, y_top, "s", y_label_wave, True)
-
+            self.pg_waveform.setLabel('bottom', 'Time (s)', color='w', size='12pt')
+            self.pg_waveform.setLabel('left', y_label_wave, color='w', size='12pt')
+            self.attach_focus_value_overlay(self.pg_waveform, t_vec, y_top, x_unit="s", y_unit=y_label_wave, snap_to_peak=False)
+            
+            # Spectrum
             self.pg_spectrum.clear()
             self.pg_spectrum.plot(self.freqs, mag_bot, pen='r')
-            self.pg_spectrum.setXRange(self.selected_fmin_hz, self.selected_fmax_hz)
-            self.pg_spectrum.setLabel('left', y_label_spec)
-            self.attach_focus_value_overlay(self.pg_spectrum, self.freqs, mag_bot, "Hz", y_label_spec, True)
+            self.pg_spectrum.setLabel('bottom', 'Frequency (Hz)', color='w', size='12pt')
+            self.pg_spectrum.setLabel('left', y_label_spec, color='w', size='12pt')
+            self.attach_focus_value_overlay(self.pg_spectrum, self.freqs, mag_bot, "Hz", y_label_spec, True, win=10)
 
-        elif view == 2:                 # Waveform + Waveform
+        elif view == 2:  # Waveform + Waveform
+            # Top waveform
             self.pg_waveform_top.clear()
             self.pg_waveform_top.plot(t_vec, y_top, pen='b')
+            self.pg_waveform_top.setLabel('bottom', 'Time (s)', color='red', size='12pt')
+            self.pg_waveform_top.setLabel('left', y_label_wave, color='red', size='12pt')
             self.attach_focus_value_overlay(self.pg_waveform_top, t_vec, y_top, "s", y_label_wave, True)
 
+            # Bottom waveform
             self.pg_waveform_bottom.clear()
             self.pg_waveform_bottom.plot(t_vec, y_bot, pen='g')
+            self.pg_waveform_bottom.setLabel('bottom', 'Time (s)', color='red', size='12pt')
+            self.pg_waveform_bottom.setLabel('left', y_label_wave, color='red', size='12pt')
             self.attach_focus_value_overlay(self.pg_waveform_bottom, t_vec, y_bot, "s", y_label_wave, True)
 
-        elif view == 3:                 # Spectrum + Spectrum
+        elif view == 3:  # Spectrum + Spectrum
+            # Top spectrum
             self.pg_spectrum_top.clear()
             self.pg_spectrum_top.plot(self.freqs, mag_top, pen='b')
-            #self.pg_spectrum_top.setXRange(self.selected_fmin_hz, self.selected_fmax_hz)
-            self.pg_spectrum_top.setLabel('left', y_label_spec)
-            self.attach_focus_value_overlay(self.pg_spectrum_top, self.freqs, mag_top, "Hz", y_label_spec, True)
+            self.pg_spectrum_top.setLabel('bottom', 'Frequency (Hz)', color='red', size='12pt')
+            self.pg_spectrum_top.setLabel('left', y_label_spec, color='red', size='12pt')
+            self.attach_focus_value_overlay(self.pg_spectrum_top, self.freqs, mag_top, "Hz", y_label_spec, True, win=10)
 
+            # Bottom spectrum
             self.pg_spectrum_bottom.clear()
             self.pg_spectrum_bottom.plot(self.freqs, mag_bot, pen='g')
-            self.pg_spectrum_bottom.setXRange(self.selected_fmin_hz, self.selected_fmax_hz)
-            self.pg_spectrum_bottom.setLabel('left', y_label_spec)
-            self.attach_focus_value_overlay(self.pg_spectrum_bottom, self.freqs, mag_bot, "Hz", y_label_spec, True)
+            self.pg_spectrum_bottom.setLabel('bottom', 'Frequency (Hz)', color='red', size='12pt')
+            self.pg_spectrum_bottom.setLabel('left', y_label_spec, color='red', size='12pt')
+            self.attach_focus_value_overlay(self.pg_spectrum_bottom, self.freqs, mag_bot, "Hz", y_label_spec, True, win=10)
 
-        elif view == 4:                 # Readings + Readings
-            self.acc_input0["input"].setText(f"{top_vals['acc']:.2f}")
-            self.vel_input0["input"].setText(f"{top_vals['vel']:.2f}")
-            self.disp_input0["input"].setText(f"{top_vals['disp']:.2f}")
-            #self.freq_input0["input"].setText(f"{top_vals['freq']:.2f}")
+        elif view == 4:  # Readings + Readings
+            self.acc_input0["input"].setText(f"{acc_val:.2f}")
+            self.vel_input0["input"].setText(f"{vel_val:.2f}")
+            self.disp_input0["input"].setText(f"{disp_val:.2f}")
 
-            self.acc_input1["input"].setText(f"{bottom_vals['acc']:.2f}")
-            self.vel_input1["input"].setText(f"{bottom_vals['vel']:.2f}")
-            self.disp_input1["input"].setText(f"{bottom_vals['disp']:.2f}")
-            #self.freq_input1["input"].setText(f"{bottom_vals['freq']:.2f}")
+            self.acc_input1["input"].setText(f"{acce_val:.2f}")
+            self.vel_input1["input"].setText(f"{vel_val1:.2f}")
+            self.disp_input1["input"].setText(f"{disp_val1:.2f}")
 
-        elif view == 5:                 # Readings + Spectrum
+        elif view == 5:  # Readings + Spectrum
+            self.acc_input2["input"].setText(f"{acce_val:.2f}")
+            self.vel_input2["input"].setText(f"{vel_val1:.2f}")
+            self.disp_input2["input"].setText(f"{disp_val1:.2f}")
+            
+            # Spectrum
             self.pg_readings_spectrum.clear()
             self.pg_readings_spectrum.plot(self.freqs, mag_top, pen='b')
-            self.pg_readings_spectrum.setXRange(self.selected_fmin_hz, self.selected_fmax_hz)
-            self.pg_readings_spectrum.setLabel('left', y_label_spec)
-            self.attach_focus_value_overlay(self.pg_readings_spectrum, self.freqs, mag_top, "Hz", y_label_spec, True)
-
-            self.acc_input2["input"].setText(f"{top_vals['acc']:.2f}")
-            self.vel_input2["input"].setText(f"{top_vals['vel']:.2f}")
-            self.disp_input2["input"].setText(f"{top_vals['disp']:.2f}")
-            #self.freq_input2["input"].setText(f"{top_vals['freq']:.2f}")
+            self.pg_readings_spectrum.setLabel('bottom', 'Frequency (Hz)', color='red', size='12pt')
+            self.pg_readings_spectrum.setLabel('left', y_label_spec, color='red', size='12pt')
+            self.attach_focus_value_overlay(self.pg_readings_spectrum, self.freqs, mag_top, "Hz", y_label_spec, True, win=10)
 
         # Cache latest for snapshot
         self.last_snapshot_data = results
-
-
-
-
-
-
-

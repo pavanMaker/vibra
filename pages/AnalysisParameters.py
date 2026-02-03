@@ -194,7 +194,7 @@ class AnalysisParameter(QDialog):
                     self.parent().selected_fmin_hz = fmin_val
                     popup.accept()
                 except ValueError:
-                    popup.reject()
+                    popup.reject()  
             else:
                 input_field.setText(current + key)
 
@@ -217,15 +217,20 @@ class AnalysisParameter(QDialog):
             if 'khz' in fmax_text:
                 clean_value = ''.join(c for c in fmax_text if c.isdigit() or c == '.')
                 fmax_hz = float(clean_value) * 1000
+                sampling_frequency = fmax_hz * 2.56
+                print("Setting sampling frequency to:", sampling_frequency)
             elif 'hz' in fmax_text:
                 clean_value = ''.join(c for c in fmax_text if c.isdigit() or c == '.')
                 fmax_hz = float(clean_value)
+                sampling_frequency = fmax_hz * 2.56
             else:
                 fmax_hz = float(fmax_text)
             parent.selected_fmax_hz = fmax_hz
-            print("✅ Fmax set to:", parent.selected_fmax_hz, "Hz")
+            sampling_frequency = fmax_hz * 2.56
+            parent.daq.sample_rate = sampling_frequency
+            print(" Fmax set to:", parent.selected_fmax_hz, "Hz")
         except Exception:
-            print(f"❌ Invalid Fmax format: {fmax_text}")
+            print(f" Invalid Fmax format: {fmax_text}")
             parent.selected_fmax_hz = 500.0  # fallback
 
         fmin_txt = self.fmin_input.text().strip()
@@ -269,7 +274,8 @@ class AnalysisParameter(QDialog):
             "trace_mode_index": int(getattr(parent, "stacked_views", None).currentIndex() if getattr(parent, "stacked_views", None) else 0),
             "display_settings": getattr(parent, "display_settings", {}),
             "buffer_size": int(getattr(parent, "buffer_size", 4096)),
-            "input_channels": getattr(parent, "input_channels", None).data if getattr(parent, "input_channels", None) else None
+            "input_channels": getattr(parent, "input_channels", None).data if getattr(parent, "input_channels", None) else None,
+            "sample_rate": parent.daq.sample_rate
         }
         save_settings(to_save)
 

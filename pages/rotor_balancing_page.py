@@ -1,6 +1,10 @@
+
 # rotor_balancing_page.py
 import math
+import time
 import numpy as np
+import pyqtgraph as pg
+
 from PyQt6.QtWidgets import (
     QWidget, QPushButton, QLabel,
     QVBoxLayout, QHBoxLayout, QGridLayout
@@ -8,16 +12,25 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QPainter, QPen, QBrush, QFont
 from PyQt6.QtCore import Qt, QTimer
 
+from daqhats import OptionFlags, TriggerModes, SourceType
 from backend.mcc_backend import Mcc172Backend
 from pages.tachometer import TachometerReader
 from pages.settings_manager import load_settings
-import time
 
 
+# ===================== CONSTANTS =====================
+RPM_DIFF_LIMIT = 3
+RPM_STABLE_COUNT_REQ = 2
+TACH_TIMEOUT = 0.5
 
-# ======================================================
-# CANVAS WITH DEGREE MARKINGS
-# ======================================================
+STATE_WAIT_RPM     = 0
+STATE_WAIT_STABLE  = 1
+STATE_WAIT_TRIGGER = 2
+STATE_SAMPLING     = 3
+STATE_HOLD_LAST    = 4
+
+
+# ===================== ROTOR CANVAS =====================
 class RotorCanvas(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -35,464 +48,439 @@ class RotorCanvas(QWidget):
         cx, cy = x + size // 2, y + size // 2
         r = size // 2 - 10
 
-        # Draw crosshair
         painter.setPen(QPen(Qt.GlobalColor.gray, 1, Qt.PenStyle.DashLine))
         painter.drawLine(cx - r, cy, cx + r, cy)
         painter.drawLine(cx, cy - r, cx, cy + r)
 
-        # Draw main circle
         painter.setPen(QPen(Qt.GlobalColor.white, 4))
         painter.drawEllipse(x, y, size, size)
 
-        # Draw degree markings
         painter.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         painter.setPen(QPen(Qt.GlobalColor.yellow))
-        
-        degree_positions = [
-            (0, cx, cy - r - 20, "0°"),
-            (90, cx + r + 15, cy, "90°"),
-            (180, cx, cy + r + 20, "180°"),
-            (270, cx - r - 25, cy, "270°")
-        ]
-        
-        for angle, px, py, label in degree_positions:
-            painter.drawText(int(px - 15), int(py + 5), label)
+        painter.drawText(cx - 15, cy - r - 20, "0°")
+        painter.drawText(cx + r + 10, cy + 5, "90°")
+        painter.drawText(cx - 15, cy + r + 25, "180°")
+        painter.drawText(cx - r - 30, cy + 5, "270°")
 
-        # Draw phase vector (red line)
         painter.setPen(QPen(Qt.GlobalColor.red, 4))
         angle_rad = math.radians(self.phase_deg - 90)
-        end_x = cx + r * math.cos(angle_rad)
-        end_y = cy + r * math.sin(angle_rad)
-        painter.drawLine(int(cx), int(cy), int(end_x), int(end_y))
 
-        # Draw center dot
+        end_x = int(cx + r * math.cos(angle_rad))
+        end_y = int(cy + r * math.sin(angle_rad))
+
+        painter.drawLine(int(cx), int(cy), end_x, end_y)
+
+
         painter.setBrush(QBrush(Qt.GlobalColor.red))
-        painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(cx - 5, cy - 5, 10, 10)
 
-        # Status text
         painter.setFont(QFont("Arial", 14))
-        painter.setPen(QPen(Qt.GlobalColor.white))
+        painter.setPen(Qt.GlobalColor.white)
         status = "Sampling..." if self.is_sampling else "Waiting for Tach..."
         painter.drawText(x, y + size + 10, size, 25,
                          Qt.AlignmentFlag.AlignCenter, status)
 
-        # Amplitude bar
-        bar_y = y + size + 45
-        bar_w = size
-        bar_h = 16
-        fill = int(bar_w * max(0.0, min(1.0, self.amplitude)))
-
-        painter.setBrush(QBrush(Qt.GlobalColor.green))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRect(x, bar_y, fill, bar_h)
-
-        painter.setPen(QPen(Qt.GlobalColor.white, 1))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(x, bar_y, bar_w, bar_h)
-
         painter.end()
 
 
-# ======================================================
-# ROTOR PAGE WITH DEBUG
-# ======================================================
+# ===================== ROTOR PAGE =====================
 class RotorPage(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
 
-        # ================= STATE =================
-        self.collecting = False
-        self.current_rpm = 0.0
-        self.current_freq_1x = 0.0
-        self.rotation_count = 0
-        self.rpm_ready = False
-        self.last_tach_time = None
-        self.last_buffer_start_time = None
-        # self.buffer_ready = False
-
-        self.last_valid_result = None
-        self.samples_collected = 0
-
-        # Load sensitivity from settings
+        # ---------- SETTINGS ----------
         stored = load_settings()
         self.sensitivity_v_per_g = stored.get("sensitivity_ch1", 0.1)
-        self.no_of_samples = stored.get("buffer_size", 8192)
-        print(f"🔧 Loaded sensitivity: {self.sensitivity_v_per_g} V/g")
+        self.max_samples = 8192
+        self.sample_rate = 5000
+
+        # ---------- STATE ----------
+        self.state = STATE_WAIT_RPM
+        self.last_rpm = None
+        self.rpm_stable_count = 0
+        self.locked_freq_1x = None
+        self.last_tach_time = None
+        self.last_valid_result = None
 
         self.analysis_buffer = []
-        self.max_samples = self.no_of_samples
 
-        # AVERAGING LISTS
-        self.phase_history = []
-        self.acc_history = []
-        self.vel_history = []
-
-        # ================= WATCHDOG =================
-        self.tach_timeout_ms = 500
-        self.watchdog_timer = QTimer()
-        self.watchdog_timer.setSingleShot(True)
-        self.watchdog_timer.timeout.connect(self.on_tach_timeout)
-
-        # ✅ LAZY INITIALIZATION
+        # ---------- LAZY HARDWARE ----------
         self.daq = None
         self.tach = None
         self.read_timer = None
         self.hardware_initialized = False
 
-        # ================= UI =================
+        # ---------- UI ----------
         self.build_ui()
-        
-        print("✅ RotorPage __init__ complete")
 
-    # ======================================================
-    # LAZY INITIALIZATION
-    # ======================================================
-    def showEvent(self, event):
-        """Called when page becomes visible"""
-        super().showEvent(event)
-        
-        if not self.hardware_initialized:
-            print("\n" + "="*60)
-            print(" ROTOR BALANCING PAGE OPENED - INITIALIZING HARDWARE")
-            print("="*60)
-            self.initialize_hardware()
-    
-    def initialize_hardware(self):
-        """Initialize DAQ and Tachometer"""
-        try:
-            # Load settings
-            stored = load_settings()
-            No_of_sampels = stored.get("buffer_size", 8192)
-            saved_sample_rate = stored.get("sample_rate", None)
-            if saved_sample_rate is None:
-                selected_fmax_hz = stored.get("selected_fmax_hz", 500.0)
-                saved_sample_rate = int(selected_fmax_hz * 2.56)
-            
-            print(f" Sample rate: {saved_sample_rate} Hz")
-
-            # ================= DAQ =================
-            print("Initializing DAQ...")
-            self.daq = Mcc172Backend(
-                buffer_size=No_of_sampels,
-                sample_rate=saved_sample_rate
-            )
-            self.daq.setup()
-            print(f"DAQ initialized (actual rate: {self.daq.actual_rate} Hz)")
-
-            # ================= TACH =================
-            print("Initializing Tachometer...")
-            self.tach = TachometerReader()
-            # self.tach.first_pulse_detected.connect(self.on_first_pulse)
-            self.tach.rpm_updated.connect(self.on_rpm_update)
-            # self.tach.rotation_complete.connect(self.on_rotation_complete)
-            print(" Tachometer initialized")
-
-            # ================= DAQ READ TIMER =================
-            print("Starting DAQ read timer...")
-            self.read_timer = QTimer()
-            self.read_timer.timeout.connect(self.read_daq_data)
-            self.read_timer.start(50)
-            print("DAQ read timer started (50ms interval)")
-
-            self.hardware_initialized = True
-            print("="*60)
-            print("ROTOR BALANCING HARDWARE READY!")
-            print("="*60 + "\n")
-            
-        except Exception as e:
-            print(f"ERROR initializing hardware: {e}")
-            import traceback
-            traceback.print_exc()
-            self.hardware_initialized = False
-    
-    def hideEvent(self, event):
-        """Called when page is hidden"""
-        super().hideEvent(event)
-        
-        print("\n Rotor page hidden - stopping collection")
-        if self.collecting:
-            self.collecting = False
-            self.analysis_buffer.clear()
-        
-        if self.daq:
-            try:
-                self.daq.stop_scan()
-                print("DAQ stopped")
-            except Exception as e:
-                print(f"Error stopping DAQ: {e}")
-    # ======================================================
-    # UI
-    # ======================================================
+    # ===================== UI =====================
     def build_ui(self):
+    # -------- MAIN LAYOUT --------
+        self.setStyleSheet("background-color: black;")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
 
+        # -------- TOP BAR --------
         bar = QWidget()
-        bar.setStyleSheet("background:#1e1e1e")
-        h = QHBoxLayout(bar)
+        bar.setStyleSheet("background-color: #111111;")
+        bar_l = QHBoxLayout(bar)
 
         back = QPushButton("⬅ Back")
+        back.setStyleSheet("""
+            QPushButton {
+                background-color: #333333;
+                color: white;
+                padding: 6px;
+            }
+            QPushButton:hover {
+                background-color: #555555;
+            }
+        """)
         back.clicked.connect(self.go_back)
-        back.setStyleSheet("background:#444;color:white;padding:6px")
 
         title = QLabel("Rotor Balancing")
-        title.setStyleSheet("color:white;font-size:18px;font-weight:bold")
+        title.setStyleSheet("""
+            color: white;
+            font-size: 20px;
+            font-weight: bold;
+        """)
 
-        h.addWidget(back)
-        h.addWidget(title)
-        h.addStretch()
+        bar_l.addWidget(back)
+        bar_l.addWidget(title)
+        bar_l.addStretch()
+
         layout.addWidget(bar)
 
+        # -------- MAIN CONTENT --------
         top = QWidget()
-        h = QHBoxLayout(top)
+        top_l = QHBoxLayout(top)
 
+        # -------- ROTOR CANVAS --------
         self.canvas = RotorCanvas(self)
         self.canvas.setMinimumHeight(420)
-        h.addWidget(self.canvas, 3)
+        top_l.addWidget(self.canvas, 3)
 
+        # -------- VALUE PANEL --------
         values = QWidget()
-        g = QGridLayout(values)
+        values.setStyleSheet("""
+            QWidget {
+                background-color: #000000;
+                border: 1px solid #444444;
+            }
+        """)
+        grid = QGridLayout(values)
 
-        self.rpm_label = QLabel("RPM: --")
-        self.freq_label = QLabel("1× Freq: -- Hz")
-        self.phase_deg_label = QLabel("Phase: --°")
-        self.acc_label = QLabel("Acc: -- m/s²")
-        self.vel_label = QLabel("Vel: -- mm/s")
-        self.rotation_label = QLabel("Rotations: 0")
-        self.status_label = QLabel("Status: Waiting...")
+        # Labels (White)
+        self.rpm_label = QLabel("RPM:")
+        self.freq_label = QLabel("1× Freq:")
+        self.phase_label = QLabel("Phase:")
+        self.acc_title_label = QLabel("Acc:")
+        self.vel_title_label = QLabel("Vel:")
 
-        labels = [
-            self.rpm_label, self.freq_label,
-            self.phase_deg_label, self.acc_label,
-            self.vel_label, self.rotation_label,
-            self.status_label
-        ]
+        # Values (Green Digital Style)
+        self.rpm_value = QLabel("--")
+        self.freq_value = QLabel("-- Hz")
+        self.phase_deg_label = QLabel("--°")
+        self.acc_label = QLabel("--")
+        self.vel_label = QLabel("--")
 
-        for i, lbl in enumerate(labels):
-            lbl.setStyleSheet("font-size:15px")
-            g.addWidget(lbl, i, 0)
+        title_style = "color: white; font-size: 16px;"
+        value_style = """
+            color: #00FF00;
+            font-size: 18px;
+            font-weight: bold;
+        """
 
-        h.addWidget(values, 1)
+        for lbl in [
+            self.rpm_label,
+            self.freq_label,
+            self.phase_label,
+            self.acc_title_label,
+            self.vel_title_label
+        ]:
+            lbl.setStyleSheet(title_style)
+
+        for val in [
+            self.rpm_value,
+            self.freq_value,
+            self.phase_deg_label,
+            self.acc_label,
+            self.vel_label
+        ]:
+            val.setStyleSheet(value_style)
+
+        # Add to grid
+        grid.addWidget(self.rpm_label, 0, 0)
+        grid.addWidget(self.rpm_value, 0, 1)
+
+        grid.addWidget(self.freq_label, 1, 0)
+        grid.addWidget(self.freq_value, 1, 1)
+
+        grid.addWidget(self.phase_label, 2, 0)
+        grid.addWidget(self.phase_deg_label, 2, 1)
+
+        grid.addWidget(self.acc_title_label, 3, 0)
+        grid.addWidget(self.acc_label, 3, 1)
+
+        grid.addWidget(self.vel_title_label, 4, 0)
+        grid.addWidget(self.vel_label, 4, 1)
+
+        top_l.addWidget(values, 1)
         layout.addWidget(top)
 
-    # ======================================================
-    # NAVIGATION
-    # ======================================================
-    def go_back(self):
-        print("\n🔙 Going back to main page")
-        self.collecting = False
-        self.analysis_buffer.clear()
-        
-        if self.tach:                                                                             
-            self.tach.cleanup()
-        
-        if self.daq:
-            try:
-                self.daq.stop_scan()
-            except:
-                pass
-        
-        self.main_window.stacked_widget.setCurrentIndex(0)
+        # -------- WAVEFORM / SIGNAL PLOT --------
+        self.fft_plot = pg.PlotWidget(title="Waveform View")
+        self.fft_plot.setBackground('k')  # Black background
+        self.fft_plot.setLabel('bottom', 'Time (s)', color='white')
+        self.fft_plot.setLabel('left', 'Acceleration (m/s²)', color='white')
+        self.fft_plot.showGrid(x=True, y=True, alpha=0.3)
 
-    # ======================================================
-    # TACH EVENTS
-    # ======================================================
-    def on_first_pulse(self):
-        pass
+        self.fft_curve = self.fft_plot.plot(pen=pg.mkPen(color='#00FF00', width=2))
 
-    def on_rpm_update(self, rpm):
-        self.last_tach_time = time.perf_counter()
-        self.current_rpm = rpm
-        self.current_freq_1x = rpm / 60.0
+        layout.addWidget(self.fft_plot)
 
-        self.rpm_label.setText(f"RPM: {rpm:.1f}")
-        self.freq_label.setText(f"1× Freq: {self.current_freq_1x:.2f} Hz")
 
-        # ---------- RPM GATE ----------
-        if rpm <= 10:
-            self.collecting = False
-            # self.buffer_ready = False
-            self.analysis_buffer.clear()
-            self.last_valid_result = None
-
-            if self.daq:
-                self.daq.stop_scan()
-
-            self.canvas.is_sampling = False
-            self.canvas.update()
-            self.status_label.setText("Status: Waiting for RPM > 10")
+    # ===================== LAZY LOAD =====================
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.hardware_initialized:
             return
 
-        # ---------- START SAMPLING ----------
-        if not self.collecting:
-            print(" RPM > 10 → START DAQ")
-
-            self.collecting = True
-            # self.buffer_ready = False
-            self.samples_collected = 0
-            self.analysis_buffer.clear()
-
-            self.daq.start_acquisition()
-
-            self.canvas.is_sampling = True
-            self.canvas.update()
-            # 
-
-        self.watchdog_timer.start(self.tach_timeout_ms)
-
-  
-
-    def on_rotation_complete(self):
-        pass
-
-    def process_full_buffer(self):
-        pass
-
-    def on_tach_timeout(self):
-       
-
-        # Stop sampling
-        self.collecting = False
-        self.analysis_buffer.clear()
-
-        if self.daq:
-            self.daq.stop_scan()
-
-        # Stop sampling indicator ONLY
-        self.canvas.is_sampling = False
-        self.canvas.update()
-
-       
-    # ======================================================
-    # DAQ READ
-    # ======================================================
-
-    def read_daq_data(self):
-        if not self.collecting or not self.daq:
-            return
-
-        _, ch1 = self.daq.read_data()
-        if len(ch1) == 0:
-            return
-        
-        if self.samples_collected == 0:
-            self.last_buffer_start_time = time.perf_counter()
-
-        # Fill buffer
-        self.analysis_buffer.extend(ch1)
-        self.samples_collected += len(ch1)
-
-        # Full buffer reached
-        if self.samples_collected >= self.max_samples:
-            data = np.array(self.analysis_buffer[:self.max_samples])
-            self.analysis_buffer.clear()
-            self.samples_collected = 0
-
-            result = self.analyze_1x(
-                data,
-                self.daq.actual_rate,
-                self.current_freq_1x,
-                self.sensitivity_v_per_g,
-                self.last_buffer_start_time,
-                self.last_tach_time
+        self.daq = Mcc172Backend(
             
+            sample_rate=5000,
+            buffer_size=8192,
+        )
+        self.daq.setup()
+
+        self.tach = TachometerReader()
+        self.tach.rpm_updated.connect(self.on_rpm_update)
+
+        self.read_timer = QTimer(self)
+        self.read_timer.timeout.connect(self.read_daq_data)
+        self.read_timer.start(50)
+
+        self.hardware_initialized = True
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.cleanup_hardware()
+
+    # ===================== RPM =====================
+    def on_rpm_update(self, rpm):
+        self.last_tach_time = time.time()#doubt
+        rpm = int(round(rpm))
+        self.rpm_value.setText(f"{rpm}")
+
+
+        if self.state == STATE_HOLD_LAST:
+            self.reset_cycle()
+            return
+
+        if self.state == STATE_WAIT_RPM:
+            self.last_rpm = rpm
+            self.state = STATE_WAIT_STABLE
+            return
+
+        if self.state == STATE_WAIT_STABLE:
+            if abs(rpm - self.last_rpm) < RPM_DIFF_LIMIT:
+                self.rpm_stable_count += 1
+            else:
+                self.rpm_stable_count = 0
+
+            self.last_rpm = rpm
+
+            if self.rpm_stable_count >= 2:
+                self.locked_freq_1x = rpm / 60.0
+                self.freq_value.setText(f"{self.locked_freq_1x:.2f} Hz")
+                self.arm_triggered_scan()
+                self.state = STATE_WAIT_TRIGGER
+            return
+
+        if self.state == STATE_WAIT_TRIGGER:
+            self.state = STATE_SAMPLING
+
+    # ===================== ARM TRIGGER =====================
+    def arm_triggered_scan(self):
+        print("RPM stabilized → ARM TRIGGERED SCAN")
+
+        self.analysis_buffer.clear()# doubt
+
+        try:
+            # Configure trigger on falling edge
+            self.daq.board.trigger_config(
+                SourceType.LOCAL,
+                TriggerModes.FALLING_EDGE
+            )
+            print("Trigger configured: LOCAL, FALLING_EDGE")
+
+            # Start finite scan on CH1
+            self.daq.board.a_in_scan_start(
+                channel_mask=0b11,                
+                samples_per_channel=8192,         
+                options=OptionFlags.EXTTRIGGER    
             )
 
-            # HOLD until next buffer
-            self.last_valid_result = result
-            self.update_ui(result)
+            print("Scan armed and waiting for trigger")
+
+            self.state = STATE_WAIT_TRIGGER
+            self.canvas.is_sampling = True
+            self.canvas.update()
+
+        except Exception as e:
+            print("Error arming scan:", e)
+            self.state = STATE_WAIT_RPM
+
+
+    # ===================== READ DATA =====================
+    # def read_daq_data(self):
+    #     if self.state not in (STATE_WAIT_TRIGGER, STATE_SAMPLING):
+    #         return
+
+    #     if not self.is_tach_alive():
+    #         self.enter_hold_state()
+    #         return
+
+    #     ch0, ch1 = self.daq.read_data()
+
+    #     if len(ch1) > 0:
+    #         if self.state == STATE_WAIT_TRIGGER:
+    #             # 🔑 FIRST DATA = TRIGGER FIRED
+    #             self.state = STATE_SAMPLING
+
+    #         self.analysis_buffer.extend(ch1)
+
+    #     if len(self.analysis_buffer) >= self.max_samples:
+    #         self.finish_scan()
+
+    def read_daq_data(self):
+        if self.state not in (STATE_WAIT_TRIGGER, STATE_SAMPLING):
+            return
+
+        if not self.is_tach_alive():
+            self.enter_hold_state()
+            return
+
+        ch0, ch1 = self.daq.read_data()
+
+        # 🔴 We only care about CH1
+        if len(ch1) > 0:
+            if self.state == STATE_WAIT_TRIGGER:
+                print("Trigger fired → Sampling started")
+                self.state = STATE_SAMPLING
+
+            self.analysis_buffer.extend(ch1)
+
+        if len(self.analysis_buffer) >= 8000:
+            print("buffer is filled")
+            self.finish_scan()
 
 
 
  
 
-    # ======================================================
-    # 1× EXTRACTION WITH DEBUG
-    # ======================================================
-    @staticmethod
-    def analyze_1x(signal_volts, fs, freq_1x, sensitivity_v_per_g,
-                buffer_start_time, tach_time):
+    # ===================== FINISH =====================
+    def finish_scan(self):
+        print("finish called")
+        self.daq.board.a_in_scan_stop()
+        self.daq.board.a_in_scan_cleanup()
 
-        acc = (signal_volts / sensitivity_v_per_g) * 9.80665
-        acc -= np.mean(acc)
+        data = np.array(self.analysis_buffer[:self.max_samples])
+        self.analysis_buffer.clear()
 
-        N = len(acc)
-        fft = np.fft.rfft(acc)
-        freqs = np.fft.rfftfreq(N, 1/fs)
+        result = self.analyze_1x(data, self.daq.actual_rate, self.locked_freq_1x)
+        self.last_valid_result = result
+        self.update_ui(result)
+        self.reset_cycle()
 
-        idx = int(round(freq_1x / (fs / N)))
-        idx = max(1, min(idx, len(fft)-1))
+    # ===================== FFT =====================
+    def analyze_1x(self, volts, fs, freq_1x):
+        acc = (volts / self.sensitivity_v_per_g) * 9.80665
+        acc_det = acc - np.mean(acc)
 
+       
+
+        window = np.hanning(len(acc))
+        acc_det *= window
+        window_gain = np.sum(window) / len(window)
+
+        fft = np.fft.rfft(acc_det)
+        freqs = np.fft.rfftfreq(len(acc_det), 1 / fs)
+
+        fft_mag = (2 / (len(acc_det) * window_gain)) * np.abs(fft)
+        print("FFT computed:", fft_mag)
+
+        idx = np.argmin(np.abs(freqs - freq_1x))
         C = fft[idx]
-        X = C.real
-        Y = C.imag
 
-        acc_pk = 2 * np.sqrt(X*X + Y*Y) / N
-        phase_fft = np.arctan2(Y, X)   # radians
-
-        # 🔥 PHASE CORRECTION USING TACH
-        if buffer_start_time and tach_time:
-            dt = buffer_start_time - tach_time
-            phase_correction = 2 * np.pi * freq_1x * dt
-            phase_corr = phase_fft - phase_correction
-        else:
-            phase_corr = phase_fft
-
-        phase_deg = (np.degrees(phase_corr) + 360) % 360
-
-        vel_pk = (acc_pk / (2*np.pi*freq_1x))*1000 if freq_1x > 0 else 0.0
-
-        return {
-            "phase_deg": phase_deg,
-            "acc_pk": acc_pk,
-            "vel_pk": vel_pk,
-            "idx": idx,
-            "bin_freq": freqs[idx],
-            "bin_width": freqs[1] - freqs[0]
-        }
+        phase = (np.degrees(np.arctan2(C.imag, C.real)) + 360) % 360
+        acc_pk = fft_mag[idx]
+        print(f"1x Freq: {freq_1x:.2f} Hz, Phase: {phase:.1f}°, Acc: {acc_pk:.2f} m/s²")
+        vel_pk = (acc_pk / (2 * np.pi * freq_1x)) * 1000 if freq_1x > 0 else 0.0
 
 
+        return {"phase": phase, "amp": acc_pk, "vel": vel_pk,"time_axis": np.linspace(0, len(acc) / fs, len(acc), endpoint=False), "acc_signal": acc_det}
 
-
-    # ======================================================
-    # UI UPDATE
-    # ======================================================
-    def update_ui(self, result):
-        idx = result["idx"]
-        bin_freq = result["bin_freq"]
-        bin_width = result["bin_width"]
-
-        self.phase_deg_label.setText(f"Phase: {result['phase_deg']:.1f}°")
-        self.acc_label.setText(f"Acc: {result['acc_pk']:.2f} m/s²")
-        self.vel_label.setText(f"Vel: {result['vel_pk']:.2f} mm/s")
-
-        # 🔍 DEBUG DISPLAY
-        self.rotation_label.setText(
-            f"1× idx: {idx} | bin f: {bin_freq:.3f} Hz | Δf: {bin_width:.3f}"
-        )
-
-        self.canvas.phase_deg = result["phase_deg"]
-        self.canvas.amplitude = min(result["acc_pk"] / 10.0, 1.0)
+    # ===================== UI UPDATE =====================
+    def update_ui(self, r):
+        self.phase_deg_label.setText(f"Phase: {r['phase']:.1f}°")
+        self.acc_label.setText(f"Acc: {r['amp']:.2f}")
+        self.canvas.phase_deg = r["phase"]
+        self.canvas.amplitude = min(r["amp"] / 10.0, 1.0)
         self.canvas.update()
 
+        self.fft_curve.setData(
+        r["time_axis"],
+        r["acc_signal"]
+    )
 
-    # ======================================================
-    # CLEANUP
-    # ======================================================
-    def closeEvent(self, event):
-        print("\n RotorPage closing")
-        self.collecting = False
-        self.analysis_buffer.clear()
+    # ===================== TACH LOSS =====================
+    def is_tach_alive(self):
+        return self.last_tach_time and (time.time() - self.last_tach_time) < TACH_TIMEOUT
+
+    def enter_hold_state(self):
+        self.state = STATE_HOLD_LAST
+        try:
+            self.daq.board.a_in_scan_stop()
+            self.daq.board.a_in_scan_cleanup()
+        except:
+            pass
+
+        if self.last_valid_result:
+            self.update_ui(self.last_valid_result)
+
+        self.canvas.is_sampling = False
+        self.canvas.update()
+
+    # ===================== RESET =====================
+    def reset_cycle(self):
         
+        self.state = STATE_WAIT_RPM
+        self.last_rpm = None
+        self.rpm_stable_count = 0
+        self.canvas.is_sampling = False
+        self.canvas.update()
+
+    # ===================== CLEANUP =====================
+    def cleanup_hardware(self):
+        if self.read_timer:
+            self.read_timer.stop()
+            self.read_timer = None
+
         if self.tach:
             self.tach.cleanup()
-        
+            self.tach = None
+
         if self.daq:
             try:
-                self.daq.stop_scan()
+                self.daq.board.a_in_scan_stop()
+                self.daq.board.a_in_scan_cleanup()
             except:
                 pass
-        
-        super().closeEvent(event)
+            self.daq = None
+
+        self.hardware_initialized = False
+
+    def go_back(self):
+        self.cleanup_hardware()
+        self.main_window.stacked_widget.setCurrentIndex(0)

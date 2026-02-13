@@ -823,7 +823,7 @@ class WaveformPage(QWidget):
                     f"{result.get('dom_freq', 0):.2f}",
                 ])
             except Exception as e:
-                print(f"❌ CSV write failed for channel {i}: {e}")
+                print(f" CSV write failed for channel {i}: {e}")
 
 
     def open_recordings_window(self):

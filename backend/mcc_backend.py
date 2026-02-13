@@ -4,11 +4,9 @@ from daqhats import mcc172, OptionFlags, SourceType
 from scipy.fft import fft, fftfreq,ifft,rfft,rfftfreq,irfft
 from scipy.signal import detrend, windows, sosfiltfilt, butter,find_peaks
 from scipy.signal import firwin, filtfilt
-from endaq.calc.integrate import integrals
-from endaq.calc.filters import butterworth
-from endaq.calc.stats import rms
-from scipy.integrate import cumulative_trapezoid
+# from scipy.integrate import cumulative_trapezoid
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+
 import cmsisdsp as dsp
 import json,os
 

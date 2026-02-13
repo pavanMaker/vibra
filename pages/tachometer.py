@@ -63,7 +63,7 @@ class TachometerReader(QObject):
         # RPM CALCULATION
         # ------------------------------
         rpm = (60_000_000.0 / delta_us) / self.PULSES_PER_REV
-       # print(f"🟡 RPM = {rpm:.2f}")
+        print(f"🟡 RPM = {rpm:.2f}")
 
         self.rpm_updated.emit(rpm)
 

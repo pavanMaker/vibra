@@ -472,6 +472,7 @@ class DisplayPreferences(QDialog):
             "trace_mode_index": self.parent().stacked_views.currentIndex(),
             "display_settings": self.parent().display_settings
         })
+        self.parent().refresh_reading_units()
             
 
         self.accept()

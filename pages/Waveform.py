@@ -240,6 +240,7 @@ class WaveformPage(QWidget):
         self.start_clock()
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_plot)
+        self.refresh_reading_units()
 
         
 
@@ -950,9 +951,9 @@ class WaveformPage(QWidget):
 
         # --- Top readings row
         readings_layout = QHBoxLayout()
-        self.acc_input = self.create_reading_box("Acc:", "g (peak)")
-        self.vel_input = self.create_reading_box("Vel:", "mm/s (RMS)")
-        self.disp_input = self.create_reading_box("Disp:", "�m (P-P)")
+        self.acc_input = self.create_reading_box("Acc:", "")
+        self.vel_input = self.create_reading_box("Vel:", "")
+        self.disp_input = self.create_reading_box("Disp:", "")
         self.freq_input = self.create_reading_box("Freq:", "Hz")
         self.rpm_input = self.create_reading_box("RPM:", "rev/min")
         for box in [self.acc_input, self.vel_input, self.disp_input, self.freq_input, self.rpm_input]:
@@ -1001,9 +1002,9 @@ class WaveformPage(QWidget):
         layout = QVBoxLayout(widget)
 
         readings_layout = QHBoxLayout()
-        self.acc_input0 = self.create_reading_box("Acc:", "g (peak)")
-        self.vel_input0 = self.create_reading_box("Vel:", "mm/s (RMS)")
-        self.disp_input0 = self.create_reading_box("Disp:", "µm (P-P)")
+        self.acc_input0 = self.create_reading_box("Acc:", "")
+        self.vel_input0 = self.create_reading_box("Vel:", "")
+        self.disp_input0 = self.create_reading_box("Disp:", "")
         self.freq_input0 = self.create_reading_box("Freq:", "Hz")
 
         for box in [self.acc_input0, self.vel_input0, self.disp_input0, self.freq_input0]:
@@ -1011,9 +1012,9 @@ class WaveformPage(QWidget):
         layout.addLayout(readings_layout)
 
         readings_layout1 = QHBoxLayout()
-        self.acc_input1 = self.create_reading_box("Acc:","g (peak)")
-        self.vel_input1 = self.create_reading_box("Vel:", "mm/s(RMS)")
-        self.disp_input1 = self.create_reading_box("Disp:","µm (P-P)")
+        self.acc_input1 = self.create_reading_box("Acc:","")
+        self.vel_input1 = self.create_reading_box("Vel:", "")
+        self.disp_input1 = self.create_reading_box("Disp:","")
         self.freq_input1 = self.create_reading_box("Freq:","Hz")
 
         for box1 in [self.acc_input1,self.vel_input1,self.disp_input1,self.freq_input1]:
@@ -1027,9 +1028,9 @@ class WaveformPage(QWidget):
         layout = QVBoxLayout(widget)
 
         readings_layout = QHBoxLayout()
-        self.acc_input2 = self.create_reading_box("Acc:","g (peak)")
-        self.vel_input2 = self.create_reading_box("Vel:", "mm/s (RMS)")
-        self.disp_input2 = self.create_reading_box("Disp:", "�m (P-P)")
+        self.acc_input2 = self.create_reading_box("Acc:","")
+        self.vel_input2 = self.create_reading_box("Vel:", "")
+        self.disp_input2 = self.create_reading_box("Disp:", "")
         self.freq_input2 = self.create_reading_box("Freq:", "Hz")
         self.rpm_input1 = self.create_reading_box("RPM:", "rev/min")
 
@@ -1142,8 +1143,26 @@ class WaveformPage(QWidget):
 
         dialog.exec()
 
-    # def update_rpm_display(self, rpm):
-    #     self.rpm_input["input"].setText(f"{rpm:.0f}")
+    
+
+    def refresh_reading_units(self):
+        ds = self.display_settings
+        acc_txt = f"{ds.get('Acceleration Engineering Unit', 'g')} ({ds.get('Acceleration Spectrum Type','Peak')})"
+        vel_txt = f"{ds.get('Velocity Engineering Unit', 'mm/s')} ({ds.get('Velocity Spectrum Type','RMS')})"
+        disp_txt = f"{ds.get('Displacement Engineering Unit', 'µm')} ({ds.get('Displacement Spectrum Type','PP')})"
+
+        for attr in ("acc_input", "acc_input0", "acc_input1", "acc_input2"):
+            box = getattr(self, attr, None)
+            if box:
+                box["unit"].setText(acc_txt)
+        for attr in ("vel_input", "vel_input0", "vel_input1", "vel_input2"):
+            box = getattr(self, attr, None)
+            if box:
+                box["unit"].setText(vel_txt)
+        for attr in ("disp_input", "disp_input0", "disp_input1", "disp_input2"):
+            box = getattr(self, attr, None)
+            if box:
+                box["unit"].setText(disp_txt)
 
 
    
@@ -1534,10 +1553,14 @@ class WaveformPage(QWidget):
         vel_unit = self.display_settings.get("Velocity Engineering Unit",   "mm/s")
         disp_spec = self.display_settings.get("Displacement Spectrum Type", "Peak-Peak")
         disp_unit = self.display_settings.get("Displacement Engineering Unit", "µm")
+        acc_unit_text = f"Acceleration ({acc_unit}, {acc_spec})"
+        vel_unit_text = f"Velocity ({vel_unit}, {vel_spec})"
+        disp_unit_text = f"Displacement ({disp_unit}, {disp_spec})"\
 
         quantity = self.selected_quantity
         unit = self.display_settings.get(f"{quantity} Engineering Unit")
         spec_type = self.display_settings.get(f"{quantity} Spectrum Type")
+
 
         OVERALL_KEYS = {
             "Acceleration": {
@@ -1619,6 +1642,14 @@ class WaveformPage(QWidget):
             self.vel_input["input"].setText(f"{vel_val:.2f}")
             self.disp_input["input"].setText(f"{disp_val:.2f}")
 
+            if hasattr(self, 'acc_input'):
+                self.acc_input["unit"].setText(acc_unit_text)
+            if hasattr(self, 'vel_input'):
+                self.vel_input["unit"].setText(vel_unit_text)
+            if hasattr(self, 'disp_input'):
+                self.disp_input["unit"].setText(disp_unit_text)
+            
+
             self.ax_waveform.clear()
             self.ax_waveform.plot(t_vec, y_bot)
             self.ax_waveform.set_xlabel("Time (s)")
@@ -1675,15 +1706,35 @@ class WaveformPage(QWidget):
             self.acc_input0["input"].setText(f"{acc_val:.2f}")
             self.vel_input0["input"].setText(f"{vel_val:.2f}")
             self.disp_input0["input"].setText(f"{disp_val:.2f}")
+            if hasattr(self, 'acc_input0'):
+                self.acc_input0["unit"].setText(acc_unit_text)
+            if hasattr(self, 'vel_input0'):
+                self.vel_input0["unit"].setText(vel_unit_text)
+            if hasattr(self, 'disp_input0'):
+                self.disp_input0["unit"].setText(disp_unit_text)
 
             self.acc_input1["input"].setText(f"{acce_val:.2f}")
             self.vel_input1["input"].setText(f"{vel_val1:.2f}")
             self.disp_input1["input"].setText(f"{disp_val1:.2f}")
 
+            if hasattr(self, 'acc_input1'):
+                self.acc_input1["unit"].setText(acc_unit_text)
+            if hasattr(self, 'vel_input1'):
+                self.vel_input1["unit"].setText(vel_unit_text)
+            if hasattr(self, 'disp_input1'):
+                self.disp_input1["unit"].setText(disp_unit_text)
+
         elif view == 5:  # Readings + Spectrum
             self.acc_input2["input"].setText(f"{acce_val:.2f}")
             self.vel_input2["input"].setText(f"{vel_val1:.2f}")
             self.disp_input2["input"].setText(f"{disp_val1:.2f}")
+
+            if hasattr(self, 'acc_input2'):
+                self.acc_input2["unit"].setText(acc_unit_text)
+            if hasattr(self, 'vel_input2'):
+                self.vel_input2["unit"].setText(vel_unit_text)
+            if hasattr(self, 'disp_input2'):
+                self.disp_input2["unit"].setText(disp_unit_text)
             
             # Spectrum
             self.pg_readings_spectrum.clear()

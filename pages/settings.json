@@ -1,5 +1,5 @@
 {
-  "selected_quantity": "Acceleration",
+  "selected_quantity": "Velocity",
   "selected_fmax_hz": 1440.0,
   "selected_fmin_hz": 3.0,
   "top_channel": 1,
@@ -11,6 +11,9 @@
     "Displacement Engineering Unit": "\u03bcm",
     "Displacement Spectrum Type": "Peak-Peak",
     "Velocity Engineering Unit": "mm/s",
-    "Velocity Spectrum Type": "RMS"
-  }
+    "Velocity Spectrum Type": "Peak"
+  },
+  "buffer_size": 4096,
+  "input_channels": null,
+  "sample_rate": 3686.4
 }

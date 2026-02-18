@@ -242,6 +242,16 @@ class WaveformPage(QWidget):
         self.timer.timeout.connect(self.update_plot)
         self.refresh_reading_units()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Re-setup board after returning from rotor balancing page
+        # This reconfigures clock, IEPE, and clears any trigger settings
+        try:
+            self.daq.setup()
+            print("✅ WaveformPage: Board re-initialized on show")
+        except Exception as e:
+            print(f"⚠️ Board re-init failed: {e}")
+
         
 
     def setup_ui(self):
@@ -1163,11 +1173,13 @@ class WaveformPage(QWidget):
             box = getattr(self, attr, None)
             if box:
                 box["unit"].setText(disp_txt)
-
-
-   
+  
     def start_measurement(self):
-        
+        # Clear stale averaging buffers from previous session
+        for ch in self.daq.channel_data:
+            for key in self.daq.channel_data[ch]:
+                self.daq.channel_data[ch][key] = []
+
         self.daq.start_acquisition()
         self.timer.start(self.update_interval_ms)
         self.start_button.setVisible(False)

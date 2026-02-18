@@ -251,11 +251,7 @@ class AnalysisParameter(QDialog):
                 try:
                     daq.setup()
                 except Exception as e:
-                    print("? Error setting up DAQ:", e)
-
-                
-            
-            
+                    print("? Error setting up DAQ:", e)       
             print("✅ Number of Samples set to:", selected_samples)
         except Exception:
             print(f"❌ Error setting buffer size on DAQ backend.",selected_samples)

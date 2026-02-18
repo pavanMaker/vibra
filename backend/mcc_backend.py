@@ -4,9 +4,7 @@ from daqhats import mcc172, OptionFlags, SourceType
 from scipy.fft import fft, fftfreq,ifft,rfft,rfftfreq,irfft
 from scipy.signal import detrend, windows, sosfiltfilt, butter,find_peaks
 from scipy.signal import firwin, filtfilt
-# from scipy.integrate import cumulative_trapezoid
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-
 import cmsisdsp as dsp
 import json,os
 
@@ -72,6 +70,8 @@ class Mcc172Backend:
         for i in self.channel:
             channel_mask |= (1 << i)
         print("channel_mask:", channel_mask)
+
+        self.reset_fir_state()
         self.board.a_in_scan_start(channel_mask, self.buffer_size, OptionFlags.CONTINUOUS)
     #stop acquistion data
     def stop_scan(self):
@@ -82,25 +82,29 @@ class Mcc172Backend:
     def read_data(self):
         result = self.board.a_in_scan_read_numpy(self.buffer_size, timeout=-1)
         if result and result.data is not None:
-            data = np.asarray(result.data) #storing the data of the samples
-            print("Raw data type:", type(data))
-            print(" Raw data shape:", data.shape)
+            data = np.asarray(result.data)
 
             ch0_voltage, ch1_voltage = np.zeros(0), np.zeros(0)
 
             if len(self.channel) == 2:
                 if data.ndim == 2:
-                    print("for two colums:",data.shape)
                     ch0_voltage = data[0]
-                    print("samples of ch0:",len(ch0_voltage))
                     ch1_voltage = data[1]
-                    print("samples of ch1:",len(ch1_voltage))
                 elif data.ndim == 1:
-                    ch0_voltage = data[0::2]
-                    print("samples of ch:",ch0_voltage[:20])
-                    ch1_voltage = data[1::2]
-                    print("samples of ch1:",ch1_voltage[:20])
+                    if len(data) % 2 != 0:
+                        data = data[:-1]
 
+                    # Validate minimum length
+                    if len(data) == 0:
+                        return None, None
+
+                    # Split interleaved channels
+                    data = data.reshape(-1, 2)
+                    ch0_voltage = data[:, 0]
+                    ch1_voltage = data[:, 1]
+
+
+                #  VALIDATE: both channels mus t have exact buffer_size samples
             elif len(self.channel) == 1:
                 only_ch = self.channel[0]
                 if data.ndim == 1:
@@ -108,6 +112,7 @@ class Mcc172Backend:
                         ch0_voltage = data
                     else:
                         ch1_voltage = data
+
             return ch0_voltage, ch1_voltage
 
         print("No valid data received.")
@@ -130,18 +135,35 @@ class Mcc172Backend:
 
         return peak_index, peak_value
 
+    def reset_fir_state(self):
+        if self.fir_coeffs is not None and self.fir_state is not None:
+            self.fir_state[:] = 0.0
+            dsp.arm_fir_init_f32(
+                self.firf32,
+                len(self.fir_coeffs),
+                self.fir_coeffs,
+                self.fir_state
+            )
+            print("FIR state reset")
 
-    def load_fir_from_json(self, fmax_hz):
-        # Avoid reloading FIR if fmax did not change
-        if self.current_fmax == fmax_hz:
-            return
+
+    def load_fir_from_json(self, fmax_hz, data_length=None):
+        if data_length is None:
+            data_length = self.buffer_size
+
+        # Reload if fmax changed OR data length changed
+        needs_reload = (self.current_fmax != fmax_hz) or (self.fir_coeffs is None)
+        
+        if not needs_reload and self.fir_state is not None:
+            expected_state = len(self.fir_coeffs) + data_length - 1
+            if len(self.fir_state) == expected_state:
+                return
 
         for filt in self.fir_filters:
-            
             if filt["fmax"] == fmax_hz:
                 self.fir_coeffs = np.array(filt["coefficients"], dtype=np.float32)
 
-                state_len = len(self.fir_coeffs) + self.buffer_size - 1
+                state_len = len(self.fir_coeffs) + data_length - 1
                 self.fir_state = np.zeros(state_len, dtype=np.float32)
 
                 dsp.arm_fir_init_f32(
@@ -152,11 +174,12 @@ class Mcc172Backend:
                 )
 
                 self.current_fmax = fmax_hz
-
-                print(f"✅ FIR loaded → fmax={fmax_hz} Hz | taps={len(self.fir_coeffs)}")
+                print(f"✅ FIR loaded → fmax={fmax_hz} Hz | taps={len(self.fir_coeffs)} | data_len={data_length}")
                 return
 
         raise ValueError(f"No FIR found for fmax={fmax_hz}")
+
+
 
 
     def analyze(self, result_data, sensitivity, fmax_hz, fmin_hz, channel_id):
@@ -188,10 +211,6 @@ class Mcc172Backend:
         print("length of acceleration_waveform:",N)
         block_size = 1 / self.actual_rate
         frequencies_temp = rfftfreq(N, block_size)
-      
-
-       
-
         acc_fft_temp = rfft(acceleration_waveform)
 
         # 4️⃣ Soft HPF (remove frequencies < fmin)
@@ -330,8 +349,6 @@ class Mcc172Backend:
         result_ch1 = self.analyze(ch1_voltage,sensitivities[1],fmax_hz=fmax_hz,fmin_hz=fmin_hz,channel_id =1) if ch1_voltage.size > 0 else self.empty_result()
 
         return result_ch0, result_ch1
-
- 
 
     def empty_result(self):
         return {

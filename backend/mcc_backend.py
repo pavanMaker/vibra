@@ -13,12 +13,14 @@ import json,os
 
 
 class Mcc172Backend:
-    def __init__(self, board_num=0, sample_rate=5000,  channel=[0, 1],buffer_size = 8192 ):
+    def __init__(self, board_num=0, sample_rate=5000,  channel=None,buffer_size = 8192 ):
         self.board_num = board_num
         self.sample_rate = sample_rate
         print("Sample rate:", self.sample_rate)
-       
-        self.channel = channel
+
+        # Use a per-instance default; a mutable default arg ([0, 1]) would be
+        # shared across all instances and corrupt if any caller mutates it.
+        self.channel = list(channel) if channel is not None else [0, 1]
         self.board = mcc172(board_num)
         self.buffer_size = buffer_size
         print("Buffer size:", self.buffer_size)
@@ -80,7 +82,21 @@ class Mcc172Backend:
         print("Scan stopped and cleaned up.")
 
     def read_data(self):
-        result = self.board.a_in_scan_read_numpy(self.buffer_size, timeout=-1)
+        # Guard the hardware read: a timeout, buffer overrun, or USB/HAT
+        # disconnect would otherwise raise out of the QTimer callback and
+        # force-close the app. On any failure, return empty arrays so the
+        # caller falls back to empty_result() instead of crashing.
+        try:
+            result = self.board.a_in_scan_read_numpy(self.buffer_size, timeout=-1)
+        except Exception as e:
+            print(f"⚠️ DAQ read failed: {e}")
+            return np.zeros(0), np.zeros(0)
+
+        if result is not None and getattr(result, "hardware_overrun", False):
+            print("⚠️ DAQ hardware overrun detected.")
+        if result is not None and getattr(result, "buffer_overrun", False):
+            print("⚠️ DAQ buffer overrun detected.")
+
         if result and result.data is not None:
             data = np.asarray(result.data) #storing the data of the samples
             print("Raw data type:", type(data))
@@ -334,24 +350,24 @@ class Mcc172Backend:
  
 
     def empty_result(self):
+        # Keys MUST match analyze()'s return dict exactly, so a channel with no
+        # data (single device connected) has the same shape as an analyzed one.
         return {
             "acceleration": np.array([]),
             "velocity": np.array([]),
             "displacement": np.array([]),
             "time": np.array([]),
-            "acc_peak": 0.0,
-            "acc_rms": 0.0,
-            "velocity_rms": 0.0,
-            "disp_ptps": 0.0,
-            "dom_freq": 0.0,
-            "displacement_ptps": 0.0,         
-            "frequencies": np.array([]),
-            "fft_freqs": np.array([]),
             "fft_mags": np.array([]),
-            "fft_complex": np.array([], dtype=complex),
-            "freqs_vel": np.array([]),
             "fft_mags_vel": np.array([]),
-            "fft_freqs_disp": np.array([]),
             "fft_mags_disp": np.array([]),
-            "rms_fft": 0.0
+            "frequencies": np.array([]),
+            "acc_peak": 0.0,
+            "acceleration_rms": 0.0,
+            "acceleration_ptps": 0.0,
+            "velocity_rms": 0.0,
+            "velocity_peak": 0.0,
+            "velocity_ptps": 0.0,
+            "displacement_peak": 0.0,
+            "displacement_rms": 0.0,
+            "displacement_ptps": 0.0,
         }

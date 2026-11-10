@@ -798,7 +798,12 @@ class WaveformPage(QWidget):
             print("⚠️ Screen or window not ready for capture.")
 
         #  Always analyze DAQ and write data even if frame skipped
-        results = self.daq.get_latest_waveform(fmax_hz=self.selected_fmax_hz, fmin_hz=self.selected_fmin_hz)
+        top_sens, bot_sens = self.get_selected_channel_sensitivities()
+        results = self.daq.get_latest_waveform(
+            fmax_hz=self.selected_fmax_hz,
+            fmin_hz=self.selected_fmin_hz,
+            sensitivities=[top_sens, bot_sens],
+        )
 
         if not results or len(results) != 2:
             print("⚠️ Incomplete DAQ results.")
@@ -811,16 +816,16 @@ class WaveformPage(QWidget):
                 print(f"⚠️ Channel {i} has no valid acceleration data. Skipping.")
                 continue
 
-            print(f"📥 Channel {i} - acc_peak: {result['acc_peak']:.2f}g, rms_fft: {result['rms_fft']:.2f}, dom_freq: {result['dom_freq']:.2f}")
+            print(f"📥 Channel {i} - acc_peak: {result.get('acc_peak', 0):.2f}g, acc_rms: {result.get('acceleration_rms', 0):.2f}, vel_rms: {result.get('velocity_rms', 0):.2f}")
 
             try:
                 self.csv_writer.writerow([
                     timestamp,
                     i,
                     f"{result.get('acc_peak', 0):.2f}",
-                    f"{result.get('rms_fft', 0):.2f}",
-                    f"{result.get('disp_pp', 0):.2f}",
-                    f"{result.get('dom_freq', 0):.2f}",
+                    f"{result.get('velocity_rms', 0):.2f}",
+                    f"{result.get('displacement_ptps', 0):.2f}",
+                    f"{result.get('acceleration_rms', 0):.2f}",
                 ])
             except Exception as e:
                 print(f" CSV write failed for channel {i}: {e}")
@@ -872,7 +877,12 @@ class WaveformPage(QWidget):
 
         # Get latest or cached data
         try:
-            results = self.daq.get_latest_waveform(fmax_hz=self.selected_fmax_hz, fmin_hz=self.selected_fmin_hz)
+            top_sens, bot_sens = self.get_selected_channel_sensitivities()
+            results = self.daq.get_latest_waveform(
+                fmax_hz=self.selected_fmax_hz,
+                fmin_hz=self.selected_fmin_hz,
+                sensitivities=[top_sens, bot_sens],
+            )
         except Exception as e:
             print("⚠️ Live read failed:", e)
             results = getattr(self, "last_snapshot_data", None)
@@ -917,7 +927,7 @@ class WaveformPage(QWidget):
                     res_top = results[ch_top]
                     res_bot = results[ch_bot]
                     df_wave = pd.DataFrame({"Time (s)": res_top["time"], y_label: res_top[quantity.lower()]})
-                    df_fft = pd.DataFrame({"Frequency (Hz)": res_bot["fft_freqs"], fft_label: res_bot["fft_mags"]})
+                    df_fft = pd.DataFrame({"Frequency (Hz)": res_bot["frequencies"], fft_label: res_bot["fft_mags"]})
                     df_wave.to_excel(writer, sheet_name="Top_Channel", index=False, startrow=2)
                     df_fft.to_excel(writer, sheet_name="Bottom_Channel_FFT", index=False, startrow=2)
                     writer.sheets["Top_Channel"].cell(row=1, column=1, value=wave_title)
@@ -934,7 +944,7 @@ class WaveformPage(QWidget):
                 elif trace_mode == 3:
                     for i, ch in enumerate([ch_top, ch_bot]):
                         res = results[ch]
-                        df = pd.DataFrame({"Frequency (Hz)": res["fft_freqs"], fft_label: res["fft_mags"]})
+                        df = pd.DataFrame({"Frequency (Hz)": res["frequencies"], fft_label: res["fft_mags"]})
                         sheet = "Top_Channel_FFT" if i == 0 else "Bottom_Channel_FFT"
                         df.to_excel(writer, sheet_name=sheet, index=False, startrow=2)
                         writer.sheets[sheet].cell(row=1, column=1, value=fft_title)

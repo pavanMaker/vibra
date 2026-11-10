@@ -51,7 +51,7 @@ def load_settings() -> Dict[str, Any]:
                 return data
 
             except Exception as e:
-                logger.warning("JSON decode from REST failed : %s",ex)
+                logger.warning("JSON decode from REST failed : %s", e)
                 break
 
         except Exception as e:
